@@ -111,6 +111,6 @@ Proje modüler yapıda tasarlanmıştır:
 
 ---
 
-**Geliştirici**: İDA Projesi Ekibi  
+**Geliştirici**: Erkan (Cursor)  
 **Versiyon**: 1.0  
-**Tarih**: 2024 
+**Tarih**: 2025 

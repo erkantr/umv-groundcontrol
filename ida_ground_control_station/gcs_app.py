@@ -488,17 +488,24 @@ class GCSApp(QWidget):
                 left_power = 0
                 right_power = 0
         else:
-            # Bağlantı yokken: Basit demo simülasyonu
-            phase = current_time * 0.2  # Yavaş değişim
-            left_power = 25 + 15 * math.sin(phase)      # 10-40% arası
-            right_power = 30 + 10 * math.sin(phase + 1) # 20-40% arası
+            # Bağlantı yokken: Sabit değerler (gerçek GCS davranışı)
+            left_power = 0   # Bağlantı yok = 0% güç
+            right_power = 0  # Güvenlik nedeniyle
         
         motor_powers = [left_power, right_power]
         sides = ["Sol", "Sağ"]
         
+        # Bağlantı durumuna göre etiket
+        if self.is_connected and self.vehicle:
+            status_text = "(SIM)"  # Bağlı ama gerçek data yok
+            base_color = "orange"  # Simülasyon rengi
+        else:
+            status_text = "(NO CONN)"  # Hiç bağlantı yok
+            base_color = "gray"  # Bağlantısız rengi
+        
         for i, power in enumerate(motor_powers):
-            color = "green" if power < 70 else "orange" if power < 90 else "red"
-            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% (SIM)")
+            color = base_color if not self.is_connected else ("green" if power < 70 else "orange" if power < 90 else "red")
+            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {status_text}")
             self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 2px; font-size: 10px; color: {color};")
 
     def location_callback(self, vehicle, attr_name, value):

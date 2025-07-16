@@ -218,36 +218,41 @@ class GCSApp(QWidget):
         mission_title.setFont(QFont('Arial', 14, QFont.Bold))
         mission_control_layout.addWidget(mission_title)
         
-        mode_buttons_layout = QHBoxLayout()
-        self.stabilize_button = QPushButton("STABILIZE")
-        self.auto_button = QPushButton("AUTO")
-        self.guided_button = QPushButton("GUIDED")
-        mode_buttons_layout.addWidget(self.stabilize_button)
-        mode_buttons_layout.addWidget(self.auto_button)
-        mode_buttons_layout.addWidget(self.guided_button)
-        mission_control_layout.addLayout(mode_buttons_layout)
-        
-        self.stabilize_button.clicked.connect(lambda: self.set_vehicle_mode("STABILIZE"))
-        self.auto_button.clicked.connect(lambda: self.set_vehicle_mode("AUTO"))
-        self.guided_button.clicked.connect(lambda: self.set_vehicle_mode("GUIDED"))
-
-        mission_buttons_layout = QHBoxLayout()
-        self.upload_mission_button = QPushButton("Rotayı Gönder")
-        self.read_mission_button = QPushButton("Rotayı Oku")
-        self.clear_mission_button = QPushButton("Rotayı Temizle")
-        mission_buttons_layout.addWidget(self.upload_mission_button)
-        mission_buttons_layout.addWidget(self.read_mission_button)
-        mission_buttons_layout.addWidget(self.clear_mission_button)
-        mission_control_layout.addLayout(mission_buttons_layout)
-        
-        self.upload_mission_button.clicked.connect(self.send_mission_to_vehicle)
-        self.read_mission_button.clicked.connect(self.read_mission_from_vehicle)
-        self.clear_mission_button.clicked.connect(self.clear_mission)
-
-        self.mode_buttons = [self.stabilize_button, self.auto_button, self.guided_button, 
-                           self.upload_mission_button, self.read_mission_button, self.clear_mission_button]
-        for btn in self.mode_buttons:
+        # Mode butonları
+        mode_layout = QHBoxLayout()
+        self.mode_buttons = []
+        modes = ["MANUAL", "AUTO", "GUIDED"]
+        for mode in modes:
+            btn = QPushButton(mode)
+            btn.clicked.connect(lambda checked, m=mode: self.change_mode(m))
             btn.setEnabled(False)
+            mode_layout.addWidget(btn)
+            self.mode_buttons.append(btn)
+        mission_control_layout.addLayout(mode_layout)
+        
+        # PWM Test Kontrol Paneli
+        pwm_title = QLabel("PWM Test")
+        pwm_title.setFont(QFont('Arial', 12, QFont.Bold))
+        mission_control_layout.addWidget(pwm_title)
+        
+        pwm_test_layout = QHBoxLayout()
+        self.test_left_btn = QPushButton("Sol Test")
+        self.test_left_btn.clicked.connect(lambda: self.test_thruster('left'))
+        self.test_left_btn.setEnabled(False)
+        
+        self.test_right_btn = QPushButton("Sağ Test") 
+        self.test_right_btn.clicked.connect(lambda: self.test_thruster('right'))
+        self.test_right_btn.setEnabled(False)
+        
+        self.test_stop_btn = QPushButton("STOP")
+        self.test_stop_btn.clicked.connect(self.stop_thrusters)
+        self.test_stop_btn.setEnabled(False)
+        self.test_stop_btn.setStyleSheet("background-color: red; color: white;")
+        
+        pwm_test_layout.addWidget(self.test_left_btn)
+        pwm_test_layout.addWidget(self.test_right_btn)
+        pwm_test_layout.addWidget(self.test_stop_btn)
+        mission_control_layout.addLayout(pwm_test_layout)
 
         # ... (main_layout'a widget'ların eklenmesi)
         main_layout.addWidget(sidebar_scroll)
@@ -349,6 +354,11 @@ class GCSApp(QWidget):
             QTimer.singleShot(100, self.update_telemetry)  # 100ms sonra
             for btn in self.mode_buttons:
                 btn.setEnabled(True)
+                
+            # PWM test butonlarını aktif et
+            self.test_left_btn.setEnabled(True)
+            self.test_right_btn.setEnabled(True)
+            self.test_stop_btn.setEnabled(True)
         else:
             self.connect_button.setText("BAĞLAN")
             self.connect_button.setStyleSheet("")
@@ -356,6 +366,11 @@ class GCSApp(QWidget):
             self.attitude_timer.stop()
             for btn in self.mode_buttons:
                 btn.setEnabled(False)
+                
+            # PWM test butonlarını deaktif et
+            self.test_left_btn.setEnabled(False)
+            self.test_right_btn.setEnabled(False)
+            self.test_stop_btn.setEnabled(False)
             self.vehicle = None
 
     def request_servo_output(self):
@@ -383,20 +398,95 @@ class GCSApp(QWidget):
         """Servo function parametrelerini logla"""
         if self.vehicle and hasattr(self.vehicle, 'parameters'):
             try:
+                # Vehicle tipi ve versiyonu
+                vehicle_type = getattr(self.vehicle, '_vehicle_type', 'UNKNOWN')
+                version = getattr(self.vehicle, 'version', 'UNKNOWN')
+                
+                self.log_message_received.emit(f"Vehicle: {vehicle_type}, Version: {version}")
+                
+                # Servo function'ları
                 servo1_func = self.vehicle.parameters.get('SERVO1_FUNCTION', None)
                 servo2_func = self.vehicle.parameters.get('SERVO2_FUNCTION', None)
                 servo3_func = self.vehicle.parameters.get('SERVO3_FUNCTION', None)
+                servo4_func = self.vehicle.parameters.get('SERVO4_FUNCTION', None)
                 
-                self.log_message_received.emit(f"Servo Functions: SERVO1={servo1_func}, SERVO2={servo2_func}, SERVO3={servo3_func}")
+                # Frame class ve type
+                frame_class = self.vehicle.parameters.get('FRAME_CLASS', None)
+                frame_type = self.vehicle.parameters.get('FRAME_TYPE', None)
                 
-                # Rover motor functions
-                if servo1_func == 74:
-                    self.log_message_received.emit("SERVO1: Motor2/Sağ Thruster (74)")
-                if servo2_func == 73:
-                    self.log_message_received.emit("SERVO2: Motor1/Sol Thruster (73)")
-                    
+                self.log_message_received.emit(f"Frame: CLASS={frame_class}, TYPE={frame_type}")
+                self.log_message_received.emit(f"Servo Functions: S1={servo1_func}, S2={servo2_func}, S3={servo3_func}, S4={servo4_func}")
+                
+                # Motor çıkış kanalları kontrol et
+                self.debug_all_servo_channels()
+                
             except Exception as e:
-                self.log_message_received.emit(f"Servo function okuma hatası: {e}")
+                self.log_message_received.emit(f"Vehicle info okuma hatası: {e}")
+
+    def debug_all_servo_channels(self):
+        """Tüm servo kanallarını debug et"""
+        if self.vehicle:
+            try:
+                # DroneKit channels attribute'u kontrol et
+                if hasattr(self.vehicle, 'channels'):
+                    if self.vehicle.channels is not None:
+                        self.log_message_received.emit(f"vehicle.channels type: {type(self.vehicle.channels)}")
+                        self.log_message_received.emit(f"vehicle.channels: {self.vehicle.channels}")
+                    else:
+                        self.log_message_received.emit("vehicle.channels = None")
+                else:
+                    self.log_message_received.emit("vehicle.channels attribute yok")
+                
+                # Servo output raw message listener ekle
+                @self.vehicle.on_message('SERVO_OUTPUT_RAW')
+                def servo_output_listener(vehicle, name, message):
+                    self.log_message_received.emit(f"SERVO_OUTPUT_RAW: {message}")
+                    
+                self.log_message_received.emit("SERVO_OUTPUT_RAW listener eklendi")
+                
+            except Exception as e:
+                self.log_message_received.emit(f"Servo debug hatası: {e}")
+
+    def change_mode(self, mode_name):
+        """Vehicle modunu değiştir"""
+        if self.vehicle:
+            try:
+                self.vehicle.mode = VehicleMode(mode_name)
+                self.log_message_received.emit(f"Mod değiştirildi: {mode_name}")
+            except Exception as e:
+                self.log_message_received.emit(f"Mod değiştirme hatası: {e}")
+
+    def test_thruster(self, side):
+        """Manuel thruster test - PWM komutları gönder"""
+        if not self.vehicle:
+            return
+            
+        try:
+            if side == 'left':
+                # Sol thruster test: Kanal 2'ye 1600μs (60% güç)
+                self.vehicle.channels.overrides['2'] = 1600
+                self.log_message_received.emit("Sol thruster test: CH2=1600μs")
+            elif side == 'right':
+                # Sağ thruster test: Kanal 1'e 1600μs (60% güç)  
+                self.vehicle.channels.overrides['1'] = 1600
+                self.log_message_received.emit("Sağ thruster test: CH1=1600μs")
+                
+        except Exception as e:
+            self.log_message_received.emit(f"Thruster test hatası: {e}")
+
+    def stop_thrusters(self):
+        """Tüm thruster'ları durdur"""
+        if not self.vehicle:
+            return
+            
+        try:
+            # Her iki kanala da nötr PWM gönder
+            self.vehicle.channels.overrides['1'] = 1500  # Sağ thruster nötr
+            self.vehicle.channels.overrides['2'] = 1500  # Sol thruster nötr
+            self.log_message_received.emit("Thruster'lar durduruldu: CH1=CH2=1500μs")
+            
+        except Exception as e:
+            self.log_message_received.emit(f"Thruster durdurma hatası: {e}")
 
     def disconnect_from_vehicle(self):
         if self.vehicle:

@@ -341,6 +341,10 @@ class GCSApp(QWidget):
             self.connect_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
             self.telemetry_timer.start(500)  # 500ms = 2Hz - daha hızlı güncelleme
             self.attitude_timer.start(50)   # 50ms = 20Hz - daha smooth attitude
+            
+            # SERVO_OUTPUT_RAW mesajını request et
+            self.request_servo_output()
+            
             # Bağlandıktan hemen sonra bir kez telemetri güncelle
             QTimer.singleShot(100, self.update_telemetry)  # 100ms sonra
             for btn in self.mode_buttons:
@@ -353,6 +357,46 @@ class GCSApp(QWidget):
             for btn in self.mode_buttons:
                 btn.setEnabled(False)
             self.vehicle = None
+
+    def request_servo_output(self):
+        """ArduPilot'tan SERVO_OUTPUT_RAW mesajını request et"""
+        if self.vehicle:
+            try:
+                # SERVO_OUTPUT_RAW mesajını aktif et
+                msg = self.vehicle.message_factory.request_data_stream_encode(
+                    self.vehicle._master.target_system,
+                    self.vehicle._master.target_component,
+                    2,  # MAV_DATA_STREAM_EXTENDED_STATUS
+                    2,  # 2 Hz rate
+                    1   # start_stop (1=start)
+                )
+                self.vehicle.send_mavlink(msg)
+                self.log_message_received.emit("SERVO_OUTPUT_RAW stream başlatıldı (2Hz)")
+                
+                # Servo function'ları da alalım
+                QTimer.singleShot(2000, self.log_servo_functions)  # 2 saniye sonra
+                
+            except Exception as e:
+                self.log_message_received.emit(f"SERVO_OUTPUT request hatası: {e}")
+
+    def log_servo_functions(self):
+        """Servo function parametrelerini logla"""
+        if self.vehicle and hasattr(self.vehicle, 'parameters'):
+            try:
+                servo1_func = self.vehicle.parameters.get('SERVO1_FUNCTION', None)
+                servo2_func = self.vehicle.parameters.get('SERVO2_FUNCTION', None)
+                servo3_func = self.vehicle.parameters.get('SERVO3_FUNCTION', None)
+                
+                self.log_message_received.emit(f"Servo Functions: SERVO1={servo1_func}, SERVO2={servo2_func}, SERVO3={servo3_func}")
+                
+                # Rover motor functions
+                if servo1_func == 74:
+                    self.log_message_received.emit("SERVO1: Motor2/Sağ Thruster (74)")
+                if servo2_func == 73:
+                    self.log_message_received.emit("SERVO2: Motor1/Sol Thruster (73)")
+                    
+            except Exception as e:
+                self.log_message_received.emit(f"Servo function okuma hatası: {e}")
 
     def disconnect_from_vehicle(self):
         if self.vehicle:
@@ -493,7 +537,7 @@ class GCSApp(QWidget):
                             if pwm_val is not None:
                                 all_channels_debug.append(f"CH{ch}:{pwm_val}")
                         
-                        debug_msg = f"PWM Kanalları: {', '.join(all_channels_debug)} | SERVO1_FUNC=74(Motor2), SERVO2_FUNC=73(Motor1)"
+                        debug_msg = f"PWM Kanalları: {', '.join(all_channels_debug)} | SERVO1_FUNC=73(Motor2), SERVO2_FUNC=74(Motor1)"
                         self.log_message_received.emit(debug_msg)
                         
                         # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL  
@@ -530,10 +574,11 @@ class GCSApp(QWidget):
                 self.thruster_labels[i].setStyleSheet("border: 1px solid gray; padding: 3px; font-size: 9px; color: gray;")
             return
             
-        # PWM değerleri yoksa: bekle
+        # PWM değerleri yoksa: bekle ve debug yap
         if not hasattr(self.vehicle, 'channels') or self.vehicle.channels is None:
+            self.log_message_received.emit("vehicle.channels henüz mevcut değil - SERVO_OUTPUT_RAW mesajı bekleniyor")
             for i in range(2):
-                self.thruster_labels[i].setText(f"T{i+1}: PWM YOK")
+                self.thruster_labels[i].setText(f"T{i+1}: SERVO_OUTPUT bekleniyor")
                 self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 3px; font-size: 9px; color: orange;")
             return
             

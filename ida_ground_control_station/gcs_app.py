@@ -171,7 +171,9 @@ class GCSApp(QWidget):
         self.thruster_labels = []
         for i in range(2):  # Deniz aracı için 2 thruster
             thruster_label = QLabel(f"T{i+1}: 0%")
-            thruster_label.setStyleSheet("border: 1px solid gray; padding: 2px; font-size: 10px;")
+            thruster_label.setStyleSheet("border: 1px solid gray; padding: 3px; font-size: 9px;")
+            thruster_label.setMinimumWidth(120)  # Minimum genişlik ekle
+            thruster_label.setMaximumWidth(120)  # Sabit genişlik için
             thruster_layout.addWidget(thruster_label)
             self.thruster_labels.append(thruster_label)
         
@@ -258,7 +260,7 @@ class GCSApp(QWidget):
         self.attitude_timer.timeout.connect(self.update_attitude)
         self.motor_timer = QTimer(self)
         self.motor_timer.timeout.connect(self.update_motor_simulation)
-        self.motor_timer.start(500)  # Motor simülasyonu 500ms'de bir çalışsın
+        self.motor_timer.start(1000)  # Motor simülasyonu 1s'de bir - daha az CPU kullanımı
 
         self.refresh_ports()
     
@@ -337,8 +339,10 @@ class GCSApp(QWidget):
         if connected:
             self.connect_button.setText("BAĞLANTIYI KES")
             self.connect_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
-            self.telemetry_timer.start(1000)
-            self.attitude_timer.start(100) # Attitude indicator'ı daha sık güncelle
+            self.telemetry_timer.start(500)  # 500ms = 2Hz - daha hızlı güncelleme
+            self.attitude_timer.start(50)   # 50ms = 20Hz - daha smooth attitude
+            # Bağlandıktan hemen sonra bir kez telemetri güncelle
+            QTimer.singleShot(100, self.update_telemetry)  # 100ms sonra
             for btn in self.mode_buttons:
                 btn.setEnabled(True)
         else:
@@ -367,10 +371,16 @@ class GCSApp(QWidget):
             return
 
         try:
-            speed = self.vehicle.groundspeed
-            alt = self.vehicle.location.global_relative_frame.alt  
-            heading = self.vehicle.heading
-            mode = self.vehicle.mode.name
+            # Güvenli veri alımı - None kontrolü
+            speed = getattr(self.vehicle, 'groundspeed', 0.0) or 0.0
+            alt = getattr(self.vehicle.location.global_relative_frame, 'alt', 0.0) or 0.0 if hasattr(self.vehicle, 'location') else 0.0
+            heading = getattr(self.vehicle, 'heading', 0) or 0
+            mode = getattr(self.vehicle.mode, 'name', 'UNKNOWN') if hasattr(self.vehicle, 'mode') else 'UNKNOWN'
+            
+            # Hızlı return eğer henüz veriler yüklenmemişse
+            if heading is None or heading == 0:
+                self.log_message_received.emit("Telemetri verileri henüz yükleniyor...")
+                return
             
             self.telemetry_values["Hız:"].setText(f"{speed:.1f} m/s")
             
@@ -439,18 +449,22 @@ class GCSApp(QWidget):
                     
                     # None kontrolü yap
                     if left_pwm is not None and right_pwm is not None:
-                        # PWM'i yüzdeye çevir (1000-2000 → 0-100%)
-                        left_power = max(0, min(100, (left_pwm - 1000) / 1000 * 100))
-                        right_power = max(0, min(100, (right_pwm - 1000) / 1000 * 100))
+                        # Debug: Gerçek PWM değerlerini logla
+                        self.log_message_received.emit(f"PWM Debug - Sol: {left_pwm}μs, Sağ: {right_pwm}μs")
+                        
+                        # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL
+                        left_power = max(0, min(100, (left_pwm - 1000) / 10))  # 1000-2000 → 0-100
+                        right_power = max(0, min(100, (right_pwm - 1000) / 10))  # 1000-2000 → 0-100
                         
                         motor_powers = [left_power, right_power]
+                        pwm_values = [left_pwm, right_pwm]  # Gerçek PWM değerleri
                         sides = ["Sol", "Sağ"]
                         
                         for i, power in enumerate(motor_powers):
                             color = "green" if power < 70 else "orange" if power < 90 else "red"
-                            pwm_val = int(1000 + power * 10)  # Gerçek PWM değerini göster
-                            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% ({pwm_val}μs)")
-                            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 2px; font-size: 10px; color: {color};")
+                            real_pwm = pwm_values[i]  # Gerçek PWM değerini kullan
+                            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {real_pwm}μs")
+                            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
                         return
                     else:
                         # PWM değerleri henüz None
@@ -497,16 +511,16 @@ class GCSApp(QWidget):
         
         # Bağlantı durumuna göre etiket
         if self.is_connected and self.vehicle:
-            status_text = "(SIM)"  # Bağlı ama gerçek data yok
+            status_text = "SIM"  # Bağlı ama gerçek data yok
             base_color = "orange"  # Simülasyon rengi
         else:
-            status_text = "(NO CONN)"  # Hiç bağlantı yok
+            status_text = "OFF"  # Hiç bağlantı yok
             base_color = "gray"  # Bağlantısız rengi
         
         for i, power in enumerate(motor_powers):
             color = base_color if not self.is_connected else ("green" if power < 70 else "orange" if power < 90 else "red")
             self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {status_text}")
-            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 2px; font-size: 10px; color: {color};")
+            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
 
     def location_callback(self, vehicle, attr_name, value):
         if value and self.vehicle.heading is not None:

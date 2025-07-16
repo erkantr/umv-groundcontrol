@@ -428,24 +428,81 @@ class GCSApp(QWidget):
         if self.vehicle:
             try:
                 # DroneKit channels attribute'u kontrol et
+                self.log_message_received.emit("=== CHANNELS DEBUG ===")
+                
                 if hasattr(self.vehicle, 'channels'):
                     if self.vehicle.channels is not None:
-                        self.log_message_received.emit(f"vehicle.channels type: {type(self.vehicle.channels)}")
-                        self.log_message_received.emit(f"vehicle.channels: {self.vehicle.channels}")
+                        self.log_message_received.emit(f"✓ vehicle.channels type: {type(self.vehicle.channels)}")
+                        
+                        # Channels içindeki attribute'ları kontrol et
+                        channels_attrs = dir(self.vehicle.channels)
+                        self.log_message_received.emit(f"Channels attributes: {[attr for attr in channels_attrs if not attr.startswith('_')]}")
+                        
+                        # Eğer channels bir dict-like object ise, içeriğini göster
+                        try:
+                            channels_dict = dict(self.vehicle.channels)
+                            self.log_message_received.emit(f"Channels dict: {channels_dict}")
+                        except:
+                            self.log_message_received.emit("Channels dict'e çevrilemedi")
+                        
+                        # Override durumu
+                        if hasattr(self.vehicle.channels, 'overrides'):
+                            self.log_message_received.emit(f"Overrides mevcut: {self.vehicle.channels.overrides}")
+                        else:
+                            self.log_message_received.emit("Overrides attribute yok")
+                            
                     else:
-                        self.log_message_received.emit("vehicle.channels = None")
+                        self.log_message_received.emit("✗ vehicle.channels = None")
                 else:
-                    self.log_message_received.emit("vehicle.channels attribute yok")
+                    self.log_message_received.emit("✗ vehicle.channels attribute yok")
                 
-                # Servo output raw message listener ekle
-                @self.vehicle.on_message('SERVO_OUTPUT_RAW')
+                # Servo output raw message listener ekle - daha detaylı
                 def servo_output_listener(vehicle, name, message):
-                    self.log_message_received.emit(f"SERVO_OUTPUT_RAW: {message}")
+                    # Servo değerlerini parse et
+                    servo_values = [
+                        message.servo1_raw, message.servo2_raw, message.servo3_raw, message.servo4_raw,
+                        message.servo5_raw, message.servo6_raw, message.servo7_raw, message.servo8_raw
+                    ]
+                    active_servos = [(i+1, val) for i, val in enumerate(servo_values) if val != 0]
+                    self.log_message_received.emit(f"SERVO_OUTPUT_RAW alındı! Aktif servolar: {active_servos}")
                     
-                self.log_message_received.emit("SERVO_OUTPUT_RAW listener eklendi")
+                    # Vehicle channels'ı güncelle (manual)
+                    if hasattr(self.vehicle, 'channels') and self.vehicle.channels:
+                        for i, val in enumerate(servo_values):
+                            if val != 0:
+                                self.vehicle.channels[str(i+1)] = val
+                                
+                self.vehicle.on_message('SERVO_OUTPUT_RAW')(servo_output_listener)
+                self.log_message_received.emit("✓ SERVO_OUTPUT_RAW listener eklendi")
+                
+                # Periyodik channel durumu kontrol et
+                QTimer.singleShot(5000, self.periodic_channel_check)  # 5 saniye sonra
                 
             except Exception as e:
                 self.log_message_received.emit(f"Servo debug hatası: {e}")
+                import traceback
+                self.log_message_received.emit(f"Stack trace: {traceback.format_exc()}")
+
+    def periodic_channel_check(self):
+        """Periyodik olarak channel durumunu kontrol et"""
+        if self.vehicle and hasattr(self.vehicle, 'channels'):
+            try:
+                if self.vehicle.channels is not None:
+                    # Channel verilerini logla
+                    ch1 = self.vehicle.channels.get('1', 'YOK')
+                    ch2 = self.vehicle.channels.get('2', 'YOK') 
+                    ch3 = self.vehicle.channels.get('3', 'YOK')
+                    ch4 = self.vehicle.channels.get('4', 'YOK')
+                    
+                    self.log_message_received.emit(f"Periyodik check: CH1={ch1}, CH2={ch2}, CH3={ch3}, CH4={ch4}")
+                else:
+                    self.log_message_received.emit("Periyodik check: channels=None")
+                    
+                # 10 saniye sonra tekrar kontrol et
+                QTimer.singleShot(10000, self.periodic_channel_check)
+                
+            except Exception as e:
+                self.log_message_received.emit(f"Periyodik check hatası: {e}")
 
     def change_mode(self, mode_name):
         """Vehicle modunu değiştir"""
@@ -459,20 +516,49 @@ class GCSApp(QWidget):
     def test_thruster(self, side):
         """Manuel thruster test - PWM komutları gönder"""
         if not self.vehicle:
+            self.log_message_received.emit("Thruster test: Vehicle bağlı değil")
             return
             
         try:
+            # Önce channels.overrides'ı initialize et
+            if not hasattr(self.vehicle.channels, 'overrides'):
+                self.log_message_received.emit("channels.overrides initialize ediliyor...")
+                self.vehicle.channels.overrides = {}
+            
+            # Mevcut override durumunu logla
+            current_overrides = getattr(self.vehicle.channels, 'overrides', {})
+            self.log_message_received.emit(f"Mevcut overrides: {current_overrides}")
+            
             if side == 'left':
                 # Sol thruster test: Kanal 2'ye 1600μs (60% güç)
                 self.vehicle.channels.overrides['2'] = 1600
-                self.log_message_received.emit("Sol thruster test: CH2=1600μs")
+                self.log_message_received.emit("Sol thruster test: CH2=1600μs GÖNDER")
+                
+                # Doğrulama
+                if '2' in self.vehicle.channels.overrides:
+                    self.log_message_received.emit(f"Sol override doğrulandı: CH2={self.vehicle.channels.overrides['2']}")
+                else:
+                    self.log_message_received.emit("SOL OVERRIDE BAŞARISIZ!")
+                    
             elif side == 'right':
                 # Sağ thruster test: Kanal 1'e 1600μs (60% güç)  
                 self.vehicle.channels.overrides['1'] = 1600
-                self.log_message_received.emit("Sağ thruster test: CH1=1600μs")
+                self.log_message_received.emit("Sağ thruster test: CH1=1600μs GÖNDER")
+                
+                # Doğrulama
+                if '1' in self.vehicle.channels.overrides:
+                    self.log_message_received.emit(f"Sağ override doğrulandı: CH1={self.vehicle.channels.overrides['1']}")
+                else:
+                    self.log_message_received.emit("SAĞ OVERRIDE BAŞARISIZ!")
+            
+            # Override sonrası durumu logla
+            final_overrides = getattr(self.vehicle.channels, 'overrides', {})
+            self.log_message_received.emit(f"Test sonrası overrides: {final_overrides}")
                 
         except Exception as e:
             self.log_message_received.emit(f"Thruster test hatası: {e}")
+            import traceback
+            self.log_message_received.emit(f"Stack trace: {traceback.format_exc()}")
 
     def stop_thrusters(self):
         """Tüm thruster'ları durdur"""

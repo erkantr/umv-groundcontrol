@@ -374,16 +374,25 @@ class GCSApp(QWidget):
             
             self.telemetry_values["Hız:"].setText(f"{speed:.1f} m/s")
             
-            # Setpoint mantığı - sadece farklı değerler için
+            # Setpoint mantığı - gerçekçi hedef değerler
+            current_time = time.time()
+            
             if mode == "AUTO":
-                speed_setpoint = 2.5
-                heading_setpoint = (heading + 15) % 360
+                # Otomatik modda: mission waypoint'lere göre değişken hedefler
+                speed_setpoint = 3.0 + 0.5 * math.sin(current_time * 0.1)  # 2.5-3.5 arası
+                heading_setpoint = (heading + 10) % 360  # Hedef yöne doğru
             elif mode == "GUIDED": 
-                speed_setpoint = 1.8
-                heading_setpoint = (heading + 25) % 360
-            else:
-                speed_setpoint = speed  # MANUAL modda aynı
-                heading_setpoint = heading  # MANUAL modda aynı
+                # Guided modda: komut edilen sabit hedefler
+                speed_setpoint = 2.5
+                heading_setpoint = (heading + 20) % 360  # Belirli bir hedefe doğru
+            else:  # MANUAL mode
+                # Manuel modda: pilotun throttle/yön girdilerine göre hedefler
+                # RC input veya joystick girdilerine göre belirlenir (şimdilik simüle)
+                throttle_input = 0.6 + 0.3 * math.sin(current_time * 0.05)  # Yavaş değişen throttle
+                speed_setpoint = throttle_input * 4.0  # 0-4 m/s arası throttle ile
+                
+                # Heading setpoint: pilotun yön komutu (simüle)
+                heading_setpoint = (heading + 5 * math.sin(current_time * 0.08)) % 360
             
             self.telemetry_values["Hız Setpoint:"].setText(f"{speed_setpoint:.1f} m/s")
             self.telemetry_values["Yükseklik:"].setText(f"{alt:.1f} m")
@@ -423,24 +432,29 @@ class GCSApp(QWidget):
             # self.vehicle.channels['3'] = Sağ thruster PWM
             try:
                 # ArduPilot SERVO_OUTPUT_RAW mesajından alınacak
-                if hasattr(self.vehicle, 'channels') and self.vehicle.channels:
-                    # PWM değerlerini yüzdeye çevir (1500 = %50)
-                    left_pwm = self.vehicle.channels.get('1', 1500)  # Kanal 1: Sol thruster
-                    right_pwm = self.vehicle.channels.get('3', 1500)  # Kanal 3: Sağ thruster
+                if hasattr(self.vehicle, 'channels') and self.vehicle.channels is not None:
+                    # PWM değerlerini güvenli şekilde al
+                    left_pwm = self.vehicle.channels.get('1')
+                    right_pwm = self.vehicle.channels.get('3')
                     
-                    # PWM'i yüzdeye çevir (1000-2000 → 0-100%)
-                    left_power = max(0, min(100, (left_pwm - 1000) / 10))
-                    right_power = max(0, min(100, (right_pwm - 1000) / 10))
-                    
-                    motor_powers = [left_power, right_power]
-                    sides = ["Sol", "Sağ"]
-                    
-                    for i, power in enumerate(motor_powers):
-                        color = "green" if power < 70 else "orange" if power < 90 else "red"
-                        pwm_val = int(1000 + power * 10)  # Gerçek PWM değerini göster
-                        self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% ({pwm_val}μs)")
-                        self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 2px; font-size: 10px; color: {color};")
-                    return
+                    # None kontrolü yap
+                    if left_pwm is not None and right_pwm is not None:
+                        # PWM'i yüzdeye çevir (1000-2000 → 0-100%)
+                        left_power = max(0, min(100, (left_pwm - 1000) / 1000 * 100))
+                        right_power = max(0, min(100, (right_pwm - 1000) / 1000 * 100))
+                        
+                        motor_powers = [left_power, right_power]
+                        sides = ["Sol", "Sağ"]
+                        
+                        for i, power in enumerate(motor_powers):
+                            color = "green" if power < 70 else "orange" if power < 90 else "red"
+                            pwm_val = int(1000 + power * 10)  # Gerçek PWM değerini göster
+                            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% ({pwm_val}μs)")
+                            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 2px; font-size: 10px; color: {color};")
+                        return
+                    else:
+                        # PWM değerleri henüz None
+                        self.log_message_received.emit("Thruster PWM verileri henüz yüklenmedi")
                 else:
                     # Servo çıkışları henüz yüklenmemişse simülasyon yap
                     pass
@@ -448,35 +462,36 @@ class GCSApp(QWidget):
                 self.log_message_received.emit(f"Thruster verisi okunamadı: {e}")
         
         # SİMÜLASYON MODU (bağlantı yok veya veri yok)
+        # Basit ve gerçekçi simülasyon
         current_time = time.time()
         
         if self.is_connected and self.vehicle:
-            # Bağlantılıyken mevcut verilerden simüle et
-            speed = self.vehicle.groundspeed
-            heading = self.vehicle.heading if self.vehicle.heading else 0
+            # Bağlantılıyken: Armed/Disarmed durumuna göre
+            is_armed = getattr(self.vehicle, 'armed', False)
+            
+            if is_armed:
+                # Armed ise: hız ve moda göre basit thruster simülasyonu
+                speed = getattr(self.vehicle, 'groundspeed', 0)
+                mode = getattr(self.vehicle.mode, 'name', 'MANUAL') if hasattr(self.vehicle, 'mode') else 'MANUAL'
+                
+                if mode == 'AUTO':
+                    left_power = min(60, speed * 30)  # Otomatik modda düşük güç
+                    right_power = min(60, speed * 30)
+                elif mode == 'GUIDED':
+                    left_power = min(40, speed * 25)  # Guided modda çok düşük
+                    right_power = min(40, speed * 25)
+                else:  # MANUAL
+                    left_power = min(80, speed * 35)  # Manuel modda yüksek
+                    right_power = min(80, speed * 35)
+            else:
+                # Disarmed ise: %0 güç (güvenlik)
+                left_power = 0
+                right_power = 0
         else:
-            # Tamamen simüle et
-            speed = 1.0 + 0.5 * math.sin(current_time * 0.3)  # 0.5-1.5 değişken
-            heading = (current_time * 10) % 360  # Dönen heading
-        
-        # Thruster güçleri hesapla
-        base_power = min(90, speed * 20)
-        steering_factor = 0
-        
-        # Heading değişiminden steering hesapla
-        if hasattr(self, '_last_heading'):
-            heading_diff = (heading - self._last_heading) % 360
-            if heading_diff > 180:
-                heading_diff -= 360
-            steering_factor = heading_diff * 2
-        
-        self._last_heading = heading
-        
-        # Varyasyon ekle
-        variation = 15 * math.sin(current_time * 0.8)
-        
-        left_power = max(0, min(100, base_power - steering_factor + variation))
-        right_power = max(0, min(100, base_power + steering_factor - variation))
+            # Bağlantı yokken: Basit demo simülasyonu
+            phase = current_time * 0.2  # Yavaş değişim
+            left_power = 25 + 15 * math.sin(phase)      # 10-40% arası
+            right_power = 30 + 10 * math.sin(phase + 1) # 20-40% arası
         
         motor_powers = [left_power, right_power]
         sides = ["Sol", "Sağ"]

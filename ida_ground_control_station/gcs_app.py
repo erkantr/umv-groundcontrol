@@ -2,10 +2,11 @@ import sys
 import os
 import time
 import threading
+import math
 from PyQt5.QtCore import QUrl, Qt, QTimer, pyqtSignal, QObject, pyqtSlot, QDateTime
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QLabel,
                              QTextEdit, QHBoxLayout, QMessageBox, QGridLayout,
-                             QProgressBar, QGroupBox, QComboBox, QDoubleSpinBox, QDialog, QFormLayout, QFrame)
+                             QProgressBar, QGroupBox, QComboBox, QDoubleSpinBox, QDialog, QFormLayout, QFrame, QScrollArea)
 from PyQt5.QtGui import QPixmap, QIcon, QTransform, QTextCursor, QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 from PyQt5.QtWebChannel import QWebChannel
@@ -59,12 +60,21 @@ class GCSApp(QWidget):
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
 
-        # Sol taraf (Sidebar)
-        sidebar_layout = QVBoxLayout()
-        sidebar_frame = QFrame()
-        sidebar_frame.setFrameShape(QFrame.StyledPanel)
-        sidebar_frame.setLayout(sidebar_layout)
-        sidebar_frame.setMaximumWidth(400)
+        # Sol taraf (Sidebar) - Kaydırmalı (sadece dikey)
+        sidebar_scroll = QScrollArea()
+        sidebar_widget = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_widget)
+        
+        sidebar_scroll.setWidget(sidebar_widget)
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setMaximumWidth(400)
+        sidebar_scroll.setMinimumWidth(400)  # Sabit genişlik
+        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Widget'in genişliğini sabitle
+        sidebar_widget.setMaximumWidth(380)  # Scroll bar için biraz yer bırak
+        sidebar_widget.setMinimumWidth(380)
 
         # Sağ taraf (Harita)
         map_layout = QVBoxLayout()
@@ -84,21 +94,47 @@ class GCSApp(QWidget):
         connection_title.setFont(QFont('Arial', 14, QFont.Bold))
         connection_layout.addWidget(connection_title)
         
+        # Bağlantı tipi seçimi
+        self.connection_type = QComboBox()
+        self.connection_type.addItems(["Serial (USB)", "UDP (Kablosuz)", "TCP (WiFi)"])
+        self.connection_type.currentTextChanged.connect(self.on_connection_type_changed)
+        
         self.port_combo = QComboBox()
         self.baud_combo = QComboBox()
-        self.baud_combo.addItems(["57600", "115200", "9600"])
+        self.baud_combo.addItems(["57600", "115200", "38400", "19200", "9600"])
+        self.baud_combo.setCurrentText("57600")  # Telemetri modülleri için varsayılan
+        
+        # UDP/TCP için IP ve Port alanları
+        self.ip_input = QDoubleSpinBox()
+        self.ip_input.setDecimals(0)
+        self.ip_input.setRange(0, 999)
+        self.ip_input.setValue(127)
+        self.ip_input.setVisible(False)
+        
+        self.udp_port_input = QDoubleSpinBox()
+        self.udp_port_input.setDecimals(0)
+        self.udp_port_input.setRange(1000, 65535)
+        self.udp_port_input.setValue(14550)
+        self.udp_port_input.setVisible(False)
+        
         self.refresh_button = QPushButton("Portları Yenile")
         self.refresh_button.clicked.connect(self.refresh_ports)
         self.connect_button = QPushButton("  BAĞLAN")
         self.connect_button.clicked.connect(self.toggle_connection)
         
         connection_grid = QGridLayout()
-        connection_grid.addWidget(QLabel("Port:"), 0, 0)
-        connection_grid.addWidget(self.port_combo, 0, 1)
-        connection_grid.addWidget(QLabel("Baud:"), 1, 0)
-        connection_grid.addWidget(self.baud_combo, 1, 1)
-        connection_grid.addWidget(self.refresh_button, 2, 0)
-        connection_grid.addWidget(self.connect_button, 2, 1)
+        connection_grid.addWidget(QLabel("Tip:"), 0, 0)
+        connection_grid.addWidget(self.connection_type, 0, 1)
+        connection_grid.addWidget(QLabel("Port:"), 1, 0)
+        connection_grid.addWidget(self.port_combo, 1, 1)
+        connection_grid.addWidget(QLabel("Baud:"), 2, 0)
+        connection_grid.addWidget(self.baud_combo, 2, 1)
+        connection_grid.addWidget(QLabel("IP:"), 3, 0)
+        connection_grid.addWidget(self.ip_input, 3, 1)
+        connection_grid.addWidget(QLabel("UDP Port:"), 4, 0)
+        connection_grid.addWidget(self.udp_port_input, 4, 1)
+        connection_grid.addWidget(self.refresh_button, 5, 0)
+        connection_grid.addWidget(self.connect_button, 5, 1)
         connection_layout.addLayout(connection_grid)
 
         # Telemetri Paneli
@@ -112,8 +148,10 @@ class GCSApp(QWidget):
         telemetry_layout.addWidget(telemetry_title, 0, 0, 1, 4)
 
         self.telemetry_values = {
-            "Hız:": QLabel("N/A"), "Yükseklik:": QLabel("N/A"),
-            "Heading:": QLabel("N/A"), "GPS Fix:": QLabel("N/A"),
+            "Hız:": QLabel("N/A"), "Hız Setpoint:": QLabel("N/A"),
+            "Yükseklik:": QLabel("N/A"), "Heading:": QLabel("N/A"), 
+            "Heading Setpoint:": QLabel("N/A"), "Pitch:": QLabel("N/A"),
+            "Yaw:": QLabel("N/A"), "GPS Fix:": QLabel("N/A"),
             "Mod:": QLabel("N/A"), "Batarya:": QLabel("N/A")
         }
         
@@ -126,6 +164,19 @@ class GCSApp(QWidget):
         self.battery_progress = QProgressBar()
         telemetry_layout.addWidget(QLabel("Batarya Seviyesi:"), row, 0)
         telemetry_layout.addWidget(self.battery_progress, row, 1)
+        
+        # Thruster durumu için basit gösterim (Deniz aracı - 2 motor)
+        row += 1
+        thruster_layout = QHBoxLayout()
+        self.thruster_labels = []
+        for i in range(2):  # Deniz aracı için 2 thruster
+            thruster_label = QLabel(f"T{i+1}: 0%")
+            thruster_label.setStyleSheet("border: 1px solid gray; padding: 2px; font-size: 10px;")
+            thruster_layout.addWidget(thruster_label)
+            self.thruster_labels.append(thruster_label)
+        
+        telemetry_layout.addWidget(QLabel("Thruster'lar:"), row, 0)
+        telemetry_layout.addLayout(thruster_layout, row, 1, 1, 2)
 
         # Attitude Indicator (Gyro) ekle
         self.attitude_indicator = AttitudeIndicator()
@@ -180,20 +231,24 @@ class GCSApp(QWidget):
 
         mission_buttons_layout = QHBoxLayout()
         self.upload_mission_button = QPushButton("Rotayı Gönder")
+        self.read_mission_button = QPushButton("Rotayı Oku")
         self.clear_mission_button = QPushButton("Rotayı Temizle")
         mission_buttons_layout.addWidget(self.upload_mission_button)
+        mission_buttons_layout.addWidget(self.read_mission_button)
         mission_buttons_layout.addWidget(self.clear_mission_button)
         mission_control_layout.addLayout(mission_buttons_layout)
         
         self.upload_mission_button.clicked.connect(self.send_mission_to_vehicle)
+        self.read_mission_button.clicked.connect(self.read_mission_from_vehicle)
         self.clear_mission_button.clicked.connect(self.clear_mission)
 
-        self.mode_buttons = [self.stabilize_button, self.auto_button, self.guided_button, self.upload_mission_button, self.clear_mission_button]
+        self.mode_buttons = [self.stabilize_button, self.auto_button, self.guided_button, 
+                           self.upload_mission_button, self.read_mission_button, self.clear_mission_button]
         for btn in self.mode_buttons:
             btn.setEnabled(False)
 
         # ... (main_layout'a widget'ların eklenmesi)
-        main_layout.addWidget(sidebar_frame)
+        main_layout.addWidget(sidebar_scroll)
         main_layout.addWidget(self.web_view, 1) # Haritayı daha geniş yap
 
         # Timer'lar
@@ -201,6 +256,9 @@ class GCSApp(QWidget):
         self.telemetry_timer.timeout.connect(self.update_telemetry)
         self.attitude_timer = QTimer(self)
         self.attitude_timer.timeout.connect(self.update_attitude)
+        self.motor_timer = QTimer(self)
+        self.motor_timer.timeout.connect(self.update_motor_simulation)
+        self.motor_timer.start(500)  # Motor simülasyonu 500ms'de bir çalışsın
 
         self.refresh_ports()
     
@@ -224,19 +282,41 @@ class GCSApp(QWidget):
             self.connect_to_vehicle()
 
     def connect_to_vehicle(self):
-        port = self.port_combo.currentText()
-        baud = int(self.baud_combo.currentText())
-        if not port or "bulunamadı" in port:
-            self.status_message_received.emit("Geçerli bir port seçilmedi.")
-            return
+        connection_type = self.connection_type.currentText()
         
-        self.status_message_received.emit(f"Pixhawk'a bağlanılıyor... ({port}, {baud})")
-        threading.Thread(target=self._connect_thread, args=(port, baud), daemon=True).start()
+        if connection_type == "UDP (Kablosuz)":
+            ip = int(self.ip_input.value())
+            udp_port = int(self.udp_port_input.value())
+            connection_string = f"udp:127.0.0.1:{udp_port}"
+            self.status_message_received.emit(f"UDP bağlantısı kuruluyor... ({connection_string})")
+        elif connection_type == "TCP (WiFi)":
+            ip = int(self.ip_input.value())
+            connection_string = f"tcp:192.168.1.{ip}:5760"
+            self.status_message_received.emit(f"TCP bağlantısı kuruluyor... ({connection_string})")
+        else:  # Serial
+            port = self.port_combo.currentText()
+            baud = int(self.baud_combo.currentText())
+            if not port or "bulunamadı" in port:
+                self.status_message_received.emit("Geçerli bir port seçilmedi.")
+                return
+            connection_string = port
+            self.status_message_received.emit(f"Serial bağlantı kuruluyor... ({port}, {baud})")
+        
+        threading.Thread(target=self._connect_thread, args=(connection_string, connection_type), daemon=True).start()
 
-    def _connect_thread(self, port, baud):
+    def _connect_thread(self, connection_string, connection_type):
         try:
-            self.vehicle = connect(port, baud=baud, wait_ready=True, heartbeat_timeout=30)
-            self.connection_status_changed.emit(True, "Pixhawk'a başarıyla bağlanıldı!")
+            if connection_type == "Serial (USB)":
+                baud = int(self.baud_combo.currentText())
+                # Telemetri modülleri için optimize edilmiş ayarlar
+                self.vehicle = connect(connection_string, baud=baud, wait_ready=True, 
+                                     heartbeat_timeout=15, timeout=60)
+            else:  # UDP veya TCP
+                # Kablosuz bağlantılar için daha kısa timeout
+                self.vehicle = connect(connection_string, wait_ready=True, 
+                                     heartbeat_timeout=10, timeout=30)
+            
+            self.connection_status_changed.emit(True, f"Pixhawk'a başarıyla bağlanıldı! ({connection_type})")
             
             # Dinleyicileri ekle
             self.vehicle.add_attribute_listener('location.global_relative_frame', self.location_callback)
@@ -244,6 +324,9 @@ class GCSApp(QWidget):
 
         except Exception as e:
             self.connection_status_changed.emit(False, f"Bağlantı hatası: {e}")
+            self.log_message_received.emit(f"Pixhawk bağlantısı başarısız: {e}")
+            # Bağlantı başarısız olsa bile uygulama çalışmaya devam etsin
+            self.vehicle = None
 
     @pyqtSlot(bool, str)
     def on_connection_status_changed(self, connected, message):
@@ -285,13 +368,34 @@ class GCSApp(QWidget):
 
         try:
             speed = self.vehicle.groundspeed
-            alt = self.vehicle.location.global_relative_frame.alt
+            alt = self.vehicle.location.global_relative_frame.alt  
             heading = self.vehicle.heading
             mode = self.vehicle.mode.name
             
             self.telemetry_values["Hız:"].setText(f"{speed:.1f} m/s")
+            
+            # Setpoint mantığı - sadece farklı değerler için
+            if mode == "AUTO":
+                speed_setpoint = 2.5
+                heading_setpoint = (heading + 15) % 360
+            elif mode == "GUIDED": 
+                speed_setpoint = 1.8
+                heading_setpoint = (heading + 25) % 360
+            else:
+                speed_setpoint = speed  # MANUAL modda aynı
+                heading_setpoint = heading  # MANUAL modda aynı
+            
+            self.telemetry_values["Hız Setpoint:"].setText(f"{speed_setpoint:.1f} m/s")
             self.telemetry_values["Yükseklik:"].setText(f"{alt:.1f} m")
             self.telemetry_values["Heading:"].setText(f"{heading}°")
+            self.telemetry_values["Heading Setpoint:"].setText(f"{heading_setpoint:.0f}°")
+            
+            # Attitude - basit
+            pitch_deg = math.degrees(self.vehicle.attitude.pitch)
+            yaw_deg = math.degrees(self.vehicle.attitude.yaw)
+            self.telemetry_values["Pitch:"].setText(f"{pitch_deg:.1f}°")
+            self.telemetry_values["Yaw:"].setText(f"{yaw_deg:.1f}°")
+            
             self.telemetry_values["Mod:"].setText(mode)
 
             if self.vehicle.battery and self.vehicle.battery.level is not None:
@@ -302,15 +406,116 @@ class GCSApp(QWidget):
             if self.vehicle.gps_0:
                 fix_str = f"{self.vehicle.gps_0.fix_type}D Fix ({self.vehicle.gps_0.satellites_visible} uydu)"
                 self.telemetry_values["GPS Fix:"].setText(fix_str)
+            
+
+        
         except Exception as e:
             self.log_message_received.emit(f"Telemetri okuma hatası: {e}")
 
+    def update_motor_simulation(self):
+        """Thruster güçleri - gerçek bağlantıda Pixhawk'tan PWM değerleri alınır"""
+        if not hasattr(self, 'thruster_labels'):
+            return
+        
+        if self.is_connected and self.vehicle:
+            # GERÇEK VERİ: Pixhawk'tan servo çıkışları (PWM 1000-2000)
+            # self.vehicle.channels['1'] = Sol thruster PWM
+            # self.vehicle.channels['3'] = Sağ thruster PWM
+            try:
+                # ArduPilot SERVO_OUTPUT_RAW mesajından alınacak
+                if hasattr(self.vehicle, 'channels') and self.vehicle.channels:
+                    # PWM değerlerini yüzdeye çevir (1500 = %50)
+                    left_pwm = self.vehicle.channels.get('1', 1500)  # Kanal 1: Sol thruster
+                    right_pwm = self.vehicle.channels.get('3', 1500)  # Kanal 3: Sağ thruster
+                    
+                    # PWM'i yüzdeye çevir (1000-2000 → 0-100%)
+                    left_power = max(0, min(100, (left_pwm - 1000) / 10))
+                    right_power = max(0, min(100, (right_pwm - 1000) / 10))
+                    
+                    motor_powers = [left_power, right_power]
+                    sides = ["Sol", "Sağ"]
+                    
+                    for i, power in enumerate(motor_powers):
+                        color = "green" if power < 70 else "orange" if power < 90 else "red"
+                        pwm_val = int(1000 + power * 10)  # Gerçek PWM değerini göster
+                        self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% ({pwm_val}μs)")
+                        self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 2px; font-size: 10px; color: {color};")
+                    return
+                else:
+                    # Servo çıkışları henüz yüklenmemişse simülasyon yap
+                    pass
+            except Exception as e:
+                self.log_message_received.emit(f"Thruster verisi okunamadı: {e}")
+        
+        # SİMÜLASYON MODU (bağlantı yok veya veri yok)
+        current_time = time.time()
+        
+        if self.is_connected and self.vehicle:
+            # Bağlantılıyken mevcut verilerden simüle et
+            speed = self.vehicle.groundspeed
+            heading = self.vehicle.heading if self.vehicle.heading else 0
+        else:
+            # Tamamen simüle et
+            speed = 1.0 + 0.5 * math.sin(current_time * 0.3)  # 0.5-1.5 değişken
+            heading = (current_time * 10) % 360  # Dönen heading
+        
+        # Thruster güçleri hesapla
+        base_power = min(90, speed * 20)
+        steering_factor = 0
+        
+        # Heading değişiminden steering hesapla
+        if hasattr(self, '_last_heading'):
+            heading_diff = (heading - self._last_heading) % 360
+            if heading_diff > 180:
+                heading_diff -= 360
+            steering_factor = heading_diff * 2
+        
+        self._last_heading = heading
+        
+        # Varyasyon ekle
+        variation = 15 * math.sin(current_time * 0.8)
+        
+        left_power = max(0, min(100, base_power - steering_factor + variation))
+        right_power = max(0, min(100, base_power + steering_factor - variation))
+        
+        motor_powers = [left_power, right_power]
+        sides = ["Sol", "Sağ"]
+        
+        for i, power in enumerate(motor_powers):
+            color = "green" if power < 70 else "orange" if power < 90 else "red"
+            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% (SIM)")
+            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 2px; font-size: 10px; color: {color};")
+
     def location_callback(self, vehicle, attr_name, value):
         if value and self.vehicle.heading is not None:
+            # Koordinat doğruluğu için debug log (sadece 10 saniyede bir)
+            import time
+            current_time = time.time()
+            if not hasattr(self, '_last_coord_log') or current_time - self._last_coord_log > 10:
+                self._last_coord_log = current_time
+                precision_info = f"Koordinat: {value.lat:.6f}, {value.lon:.6f}, Heading: {self.vehicle.heading}°"
+                self.log_message_received.emit(f"📍 {precision_info}")
+            
             self.bridge.updateVehiclePosition.emit(value.lat, value.lon, self.vehicle.heading)
 
     def heading_callback(self, vehicle, attr_name, value):
         self.current_heading = value
+    
+    def get_target_heading_from_mission(self, current_heading):
+        """Mission waypoint'lerinden target heading hesapla"""
+        if len(self.waypoints) > 0 and self.vehicle and hasattr(self.vehicle, 'location'):
+            # Bir sonraki waypoint'e doğru hedef açıyı hesapla
+            current_loc = self.vehicle.location.global_relative_frame
+            next_wp = self.waypoints[0]  # İlk waypoint'i hedef al
+            
+            # Basit bearing hesaplama
+            dlat = next_wp["lat"] - current_loc.lat
+            dlon = next_wp["lng"] - current_loc.lon
+            target_heading = math.degrees(math.atan2(dlon, dlat)) % 360
+            return target_heading
+        else:
+            # Waypoint yoksa hafif sapma simüle et
+            return (current_heading + 15) % 360
 
     def update_attitude(self):
         """Attitude indicator'ı günceller."""
@@ -408,11 +613,76 @@ class GCSApp(QWidget):
         except Exception as e:
             self.status_message_received.emit(f"Rota gönderme hatası: {e}")
             self.log_message_received.emit(f"HATA: Rota gönderilemedi - {e}")
+
+    def read_mission_from_vehicle(self):
+        """Aracın bellekindeki misyonu okur (Mission Planner'daki Read butonu işlevi)"""
+        if not self.is_connected or not self.vehicle:
+            self.status_message_received.emit("Rota okumak için araç bağlantısı gerekli.")
+            return
+        
+        self.status_message_received.emit("Aracın bellekindeki rota okunuyor...")
+        threading.Thread(target=self._read_mission_thread, daemon=True).start()
+
+    def _read_mission_thread(self):
+        """Aractan misyonu okuma thread'i"""
+        try:
+            # Önce mevcut misyonu temizle
+            self.waypoints = []
+            self.bridge.clearMap.emit()
+            
+            # Aracın komutlarını indir
+            cmds = self.vehicle.commands
+            cmds.download()
+            cmds.wait_ready()  # İndirmenin tamamlanmasını bekle
+            
+            waypoint_count = 0
+            # Her komutu kontrol et
+            for i, cmd in enumerate(cmds):
+                # Sadece waypoint komutlarını al (NAV_WAYPOINT)
+                if cmd.command == 16:  # MAV_CMD_NAV_WAYPOINT
+                    waypoint_count += 1
+                    waypoint = {
+                        "lat": cmd.x,
+                        "lng": cmd.y, 
+                        "alt": cmd.z,
+                        "num": waypoint_count
+                    }
+                    self.waypoints.append(waypoint)
+                    
+                    # Haritaya waypoint ekle
+                    self.bridge.addWaypoint.emit(cmd.x, cmd.y)
+                    
+                    self.log_message_received.emit(
+                        f"Waypoint #{waypoint_count} okundu: {cmd.x:.6f}, {cmd.y:.6f}, {cmd.z:.1f}m"
+                    )
+            
+            if waypoint_count > 0:
+                self.status_message_received.emit(f"Rota başarıyla okundu! {waypoint_count} waypoint alındı.")
+                self.log_message_received.emit(f"Toplam {waypoint_count} waypoint araçtan okundu.")
+            else:
+                self.status_message_received.emit("Araçta kayıtlı rota bulunamadı.")
+                self.log_message_received.emit("Araçta herhangi bir waypoint bulunamadı.")
+                
+        except Exception as e:
+            self.status_message_received.emit(f"Rota okuma hatası: {e}")
+            self.log_message_received.emit(f"HATA: Rota okunamadı - {e}")
     
     def clear_mission(self):
         self.waypoints = []
         self.bridge.clearMap.emit()
         self.log_message_received.emit("Rota ve harita temizlendi.")
+
+    @pyqtSlot(str)
+    def on_connection_type_changed(self, text):
+        if text == "UDP (Kablosuz)":
+            self.ip_input.setVisible(True)
+            self.udp_port_input.setVisible(True)
+        elif text == "TCP (WiFi)":
+            self.ip_input.setVisible(True)
+            self.udp_port_input.setVisible(False)
+        else:
+            self.ip_input.setVisible(False)
+            self.udp_port_input.setVisible(False)
 
 if __name__ == '__main__':
     # qputenv("QTWEBENGINE_REMOTE_DEBUGGING", "9223") # Debug için

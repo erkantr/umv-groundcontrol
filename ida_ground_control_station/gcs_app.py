@@ -170,13 +170,13 @@ class GCSApp(QWidget):
         
         # Thruster durumu için basit gösterim (Deniz aracı - 2 motor)
         row += 1
-        thruster_layout = QHBoxLayout()
+        thruster_layout = QVBoxLayout()  # Dikey layout - daha iyi görünüm
         self.thruster_labels = []
         for i in range(2):  # Deniz aracı için 2 thruster
             thruster_label = QLabel(f"T{i+1}: 0%")
-            thruster_label.setStyleSheet("border: 1px solid gray; padding: 3px; font-size: 9px;")
-            thruster_label.setMinimumWidth(180)  # Kanal bilgisi için daha geniş
-            thruster_label.setMaximumWidth(180)  # Sabit genişlik için
+            thruster_label.setStyleSheet("border: 1px solid gray; padding: 5px; font-size: 10px; font-weight: bold;")
+            thruster_label.setMinimumHeight(25)  # Yükseklik arttır
+            thruster_label.setWordWrap(False)  # Text wrapping kapalı
             thruster_layout.addWidget(thruster_label)
             self.thruster_labels.append(thruster_label)
         
@@ -817,32 +817,41 @@ class GCSApp(QWidget):
                             color = "red"
                             
                         real_pwm = pwm_val if pwm_val else 0
-                        self.thruster_labels[i].setText(f"{side}: {power:.0f}% {direction} {real_pwm}μs {channel_info}")
-                        self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
+                        # Kısa format: "Sol: 80% GERİ (1100μs)"
+                        self.thruster_labels[i].setText(f"{side}: {power:.0f}% {direction} ({real_pwm}μs)")
+                        self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 5px; font-size: 10px; font-weight: bold; color: {color};")
                     return
                 else:
-                    # PWM değerleri henüz cache'de yok
-                    cache_status = f"Cache durum: CH1={self.servo_output_cache.get('1', 'YOK')}, CH2={self.servo_output_cache.get('2', 'YOK')}"
-                    self.log_message_received.emit(f"SERVO_OUTPUT cache henüz boş - {cache_status}")
+                    # PWM değerleri henüz cache'de yok - basit fallback göster
+                    for i in range(2):
+                        side = "Sol" if i == 0 else "Sağ"
+                        self.thruster_labels[i].setText(f"{side}: VERİ BEKLENİYOR")
+                        self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 5px; font-size: 10px; font-weight: bold; color: orange;")
+                    return
             except Exception as e:
                 self.log_message_received.emit(f"Thruster cache okunamadı: {e}")
-                import traceback
-                self.log_message_received.emit(f"Stack trace: {traceback.format_exc()}")
+                # Hata durumunda da fallback göster
+                for i in range(2):
+                    side = "Sol" if i == 0 else "Sağ"
+                    self.thruster_labels[i].setText(f"{side}: HATA")
+                    self.thruster_labels[i].setStyleSheet("border: 1px solid red; padding: 5px; font-size: 10px; font-weight: bold; color: red;")
+                return
         
         # SADECE GERÇEK VERİ - SİMÜLASYON YOK
         if not self.is_connected or not self.vehicle:
             # Bağlantı yoksa: hiçbir şey gösterme
             for i in range(2):
-                self.thruster_labels[i].setText(f"T{i+1}: NO CONNECTION")
-                self.thruster_labels[i].setStyleSheet("border: 1px solid gray; padding: 3px; font-size: 9px; color: gray;")
+                side = "Sol" if i == 0 else "Sağ"
+                self.thruster_labels[i].setText(f"{side}: BAĞLANTI YOK")
+                self.thruster_labels[i].setStyleSheet("border: 1px solid gray; padding: 5px; font-size: 10px; font-weight: bold; color: gray;")
             return
             
         # Cache boşsa: bekle  
         if not self.servo_output_cache or '1' not in self.servo_output_cache or '2' not in self.servo_output_cache:
             for i in range(2):
                 side = "Sol" if i == 0 else "Sağ"
-                self.thruster_labels[i].setText(f"{side}: SERVO VERİSİ YOK")
-                self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 3px; font-size: 9px; color: orange;")
+                self.thruster_labels[i].setText(f"{side}: VERİ BEKLENİYOR")
+                self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 5px; font-size: 10px; font-weight: bold; color: orange;")
             return
 
     def location_callback(self, vehicle, attr_name, value):

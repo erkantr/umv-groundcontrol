@@ -456,7 +456,7 @@ class GCSApp(QWidget):
                 else:
                     self.log_message_received.emit("✗ vehicle.channels attribute yok")
                 
-                # Servo output raw message listener ekle - daha detaylı
+                # Servo output raw message listener ekle - SADECE LOG
                 def servo_output_listener(vehicle, name, message):
                     # Servo değerlerini parse et
                     servo_values = [
@@ -464,13 +464,10 @@ class GCSApp(QWidget):
                         message.servo5_raw, message.servo6_raw, message.servo7_raw, message.servo8_raw
                     ]
                     active_servos = [(i+1, val) for i, val in enumerate(servo_values) if val != 0]
-                    self.log_message_received.emit(f"SERVO_OUTPUT_RAW alındı! Aktif servolar: {active_servos}")
+                    self.log_message_received.emit(f"✓ SERVO_OUTPUT_RAW alındı! Aktif: {active_servos}")
                     
-                    # Vehicle channels'ı güncelle (manual)
-                    if hasattr(self.vehicle, 'channels') and self.vehicle.channels:
-                        for i, val in enumerate(servo_values):
-                            if val != 0:
-                                self.vehicle.channels[str(i+1)] = val
+                    # DroneKit otomatik olarak vehicle.channels'ı güncelleyecek
+                    # Manuel update yapmıyoruz - read-only çünkü
                                 
                 self.vehicle.on_message('SERVO_OUTPUT_RAW')(servo_output_listener)
                 self.log_message_received.emit("✓ SERVO_OUTPUT_RAW listener eklendi")

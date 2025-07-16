@@ -6,7 +6,7 @@ import math
 from PyQt5.QtCore import QUrl, Qt, QTimer, pyqtSignal, QObject, pyqtSlot, QDateTime
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QLabel,
                              QTextEdit, QHBoxLayout, QMessageBox, QGridLayout,
-                             QProgressBar, QGroupBox, QComboBox, QDoubleSpinBox, QDialog, QFormLayout, QFrame, QScrollArea)
+                             QProgressBar, QGroupBox, QComboBox, QDoubleSpinBox, QDialog, QFormLayout, QFrame, QScrollArea, QLineEdit)
 from PyQt5.QtGui import QPixmap, QIcon, QTransform, QTextCursor, QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 from PyQt5.QtWebChannel import QWebChannel
@@ -256,6 +256,51 @@ class GCSApp(QWidget):
         pwm_test_layout.addWidget(self.test_right_btn)
         pwm_test_layout.addWidget(self.test_stop_btn)
         mission_control_layout.addLayout(pwm_test_layout)
+        
+        # Rota Kontrol Paneli  
+        heading_title = QLabel("Rota Kontrolü")
+        heading_title.setFont(QFont('Arial', 12, QFont.Bold))
+        mission_control_layout.addWidget(heading_title)
+        
+        heading_layout = QVBoxLayout()
+        
+        # Mevcut rota gösterimi
+        self.current_heading_label = QLabel("Mevcut Rota: --°")
+        self.current_heading_label.setStyleSheet("border: 1px solid gray; padding: 5px; background-color: #f0f0f0;")
+        heading_layout.addWidget(self.current_heading_label)
+        
+        # Rota butonları
+        heading_btn_layout = QHBoxLayout()
+        
+        self.read_heading_btn = QPushButton("Rotayı Oku")
+        self.read_heading_btn.clicked.connect(self.read_current_heading)
+        self.read_heading_btn.setEnabled(False)
+        
+        self.send_heading_btn = QPushButton("Rotayı Gönder") 
+        self.send_heading_btn.clicked.connect(self.send_heading_command)
+        self.send_heading_btn.setEnabled(False)
+        
+        self.clear_heading_btn = QPushButton("Rotayı Sil")
+        self.clear_heading_btn.clicked.connect(self.clear_heading_command)
+        self.clear_heading_btn.setEnabled(False)
+        
+        heading_btn_layout.addWidget(self.read_heading_btn)
+        heading_btn_layout.addWidget(self.send_heading_btn)
+        heading_btn_layout.addWidget(self.clear_heading_btn)
+        
+        heading_layout.addLayout(heading_btn_layout)
+        
+        # Hedef rota input
+        target_heading_layout = QHBoxLayout()
+        target_heading_layout.addWidget(QLabel("Hedef Rota:"))
+        self.target_heading_input = QLineEdit()
+        self.target_heading_input.setPlaceholderText("0-359°")
+        self.target_heading_input.setMaxLength(3)
+        target_heading_layout.addWidget(self.target_heading_input)
+        target_heading_layout.addWidget(QLabel("°"))
+        
+        heading_layout.addLayout(target_heading_layout)
+        mission_control_layout.addLayout(heading_layout)
 
         # ... (main_layout'a widget'ların eklenmesi)
         main_layout.addWidget(sidebar_scroll)
@@ -362,6 +407,11 @@ class GCSApp(QWidget):
             self.test_left_btn.setEnabled(True)
             self.test_right_btn.setEnabled(True)
             self.test_stop_btn.setEnabled(True)
+            
+            # Rota butonlarını aktif et
+            self.read_heading_btn.setEnabled(True)
+            self.send_heading_btn.setEnabled(True)
+            self.clear_heading_btn.setEnabled(True)
         else:
             self.connect_button.setText("BAĞLAN")
             self.connect_button.setStyleSheet("")
@@ -374,6 +424,11 @@ class GCSApp(QWidget):
             self.test_left_btn.setEnabled(False)
             self.test_right_btn.setEnabled(False)
             self.test_stop_btn.setEnabled(False)
+            
+            # Rota butonlarını deaktif et
+            self.read_heading_btn.setEnabled(False)
+            self.send_heading_btn.setEnabled(False)
+            self.clear_heading_btn.setEnabled(False)
             self.vehicle = None
             
             # Cache'i temizle
@@ -685,6 +740,13 @@ class GCSApp(QWidget):
                 fix_str = f"{self.vehicle.gps_0.fix_type}D Fix ({self.vehicle.gps_0.satellites_visible} uydu)"
                 self.telemetry_values["GPS Fix:"].setText(fix_str)
             
+            # Rota label'ını güncelle
+            if heading is not None and hasattr(self, 'current_heading_label'):
+                if mode == "MANUAL":
+                    self.current_heading_label.setText("Mevcut Rota: MANUAL")
+                else:
+                    self.current_heading_label.setText(f"Mevcut Rota: {heading}°")
+            
 
         
         except Exception as e:
@@ -717,21 +779,45 @@ class GCSApp(QWidget):
                     debug_msg = f"Cache PWM: {', '.join(all_channels_debug)} | SERVO1_FUNC=74(Sağ), SERVO2_FUNC=73(Sol)"
                     self.log_message_received.emit(debug_msg)
                     
-                    # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL  
-                    left_power = max(0, min(100, (left_pwm - 1000) / 10)) if left_pwm else 0
-                    right_power = max(0, min(100, (right_pwm - 1000) / 10)) if right_pwm else 0
+                    # Marine thruster PWM: 1500=neutral, 1000=tam geri, 2000=tam ileri
+                    def calculate_thruster_power(pwm):
+                        if pwm is None:
+                            return 0, "NEUTRAL"
+                        # Neutral noktası 1500μs, ±25μs tolerans
+                        diff = pwm - 1500
+                        power = abs(diff) / 5.0  # Her 5μs = %1 güç
+                        power = max(0, min(100, power))
+                        
+                        # Geniş neutral bölgesi: 1475-1525μs arası NEUTRAL
+                        if abs(diff) <= 25:
+                            direction = "NEUTRAL"
+                            power = 0  # Neutral'da güç 0 göster
+                        elif diff > 25:
+                            direction = "İLERİ"
+                        else:
+                            direction = "GERİ"
+                        return power, direction
+                    
+                    left_power, left_dir = calculate_thruster_power(left_pwm)
+                    right_power, right_dir = calculate_thruster_power(right_pwm)
                     
                     # Sol motor ilk (UI sırası), Sağ motor ikinci
-                    motor_powers = [left_power, right_power]
-                    pwm_values = [left_pwm if left_pwm else 0, right_pwm if right_pwm else 0]
-                    sides = ["Sol", "Sağ"]
-                    channels = ["CH2(73)", "CH1(74)"]  # Debug için kanal ve servo function
+                    motor_data = [(left_power, left_dir, left_pwm, "Sol", "CH2(73)"),
+                                  (right_power, right_dir, right_pwm, "Sağ", "CH1(74)")]
                     
-                    for i, power in enumerate(motor_powers):
-                        color = "green" if power < 70 else "orange" if power < 90 else "red"
-                        real_pwm = pwm_values[i]  # Gerçek PWM değerini kullan
-                        channel_info = channels[i]  # Kanal ve servo function bilgisi
-                        self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {real_pwm}μs {channel_info}")
+                    for i, (power, direction, pwm_val, side, channel_info) in enumerate(motor_data):
+                        # Renk: güç ve yöne göre
+                        if direction == "NEUTRAL":
+                            color = "gray"
+                        elif power < 30:
+                            color = "green"
+                        elif power < 70:
+                            color = "orange"
+                        else:
+                            color = "red"
+                            
+                        real_pwm = pwm_val if pwm_val else 0
+                        self.thruster_labels[i].setText(f"{side}: {power:.0f}% {direction} {real_pwm}μs {channel_info}")
                         self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
                     return
                 else:
@@ -956,6 +1042,83 @@ class GCSApp(QWidget):
         else:
             self.ip_input.setVisible(False)
             self.udp_port_input.setVisible(False)
+
+    # Rota Kontrol Fonksiyonları
+    def read_current_heading(self):
+        """Aracın mevcut rotasını okur"""
+        if not self.is_connected or not self.vehicle:
+            self.log_message_received.emit("Rota okumak için araç bağlantısı gerekli")
+            return
+        
+        try:
+            current_heading = getattr(self.vehicle, 'heading', None)
+            if current_heading is not None:
+                self.current_heading_label.setText(f"Mevcut Rota: {current_heading}°")
+                self.target_heading_input.setText(str(int(current_heading)))
+                self.log_message_received.emit(f"Mevcut rota okundu: {current_heading}°")
+            else:
+                self.log_message_received.emit("Rota bilgisi henüz mevcut değil")
+        except Exception as e:
+            self.log_message_received.emit(f"Rota okuma hatası: {e}")
+
+    def send_heading_command(self):
+        """Girilen hedef rotayı araca gönderir"""
+        if not self.is_connected or not self.vehicle:
+            self.log_message_received.emit("Rota göndermek için araç bağlantısı gerekli")
+            return
+        
+        try:
+            target_heading_text = self.target_heading_input.text().strip()
+            if not target_heading_text:
+                self.log_message_received.emit("Hedef rota değeri giriniz (0-359°)")
+                return
+            
+            target_heading = float(target_heading_text)
+            if target_heading < 0 or target_heading > 359:
+                self.log_message_received.emit("Rota değeri 0-359° arasında olmalıdır")
+                return
+            
+            # GUIDED modda hedef rota gönder
+            if self.vehicle.mode.name != "GUIDED":
+                self.log_message_received.emit("Rota göndermek için GUIDED moda geçiliyor...")
+                self.vehicle.mode = VehicleMode("GUIDED")
+                time.sleep(2)  # Mod değişimini bekle
+            
+            # Rota komutunu gönder - ArduPilot SUB için
+            msg = self.vehicle.message_factory.set_position_target_global_int_encode(
+                0,  # time_boot_ms
+                self.vehicle._master.target_system,
+                self.vehicle._master.target_component,
+                8,  # coordinate_frame (MAV_FRAME_GLOBAL_RELATIVE_ALT_INT)
+                0b110111111000,  # type_mask (sadece yaw açısını kullan)
+                0, 0, 0,  # lat, lon, alt (kullanılmıyor)
+                0, 0, 0,  # vx, vy, vz (kullanılmıyor) 
+                0, 0, math.radians(target_heading)  # afx, afy, yaw
+            )
+            self.vehicle.send_mavlink(msg)
+            
+            self.log_message_received.emit(f"Hedef rota gönderildi: {target_heading}°")
+            
+        except ValueError:
+            self.log_message_received.emit("Geçersiz rota değeri. Sayı giriniz.")
+        except Exception as e:
+            self.log_message_received.emit(f"Rota gönderme hatası: {e}")
+
+    def clear_heading_command(self):
+        """Rota komutlarını temizler"""
+        if not self.is_connected or not self.vehicle:
+            self.log_message_received.emit("Rota temizlemek için araç bağlantısı gerekli")
+            return
+        
+        try:
+            # MANUAL moda geçerek otomatik rota kontrolünü durdur
+            self.vehicle.mode = VehicleMode("MANUAL")
+            self.current_heading_label.setText("Mevcut Rota: MANUAL")
+            self.target_heading_input.clear()
+            self.log_message_received.emit("Rota komutları temizlendi - MANUAL moda geçildi")
+            
+        except Exception as e:
+            self.log_message_received.emit(f"Rota temizleme hatası: {e}")
 
 if __name__ == '__main__':
     # qputenv("QTWEBENGINE_REMOTE_DEBUGGING", "9223") # Debug için

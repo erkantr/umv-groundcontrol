@@ -371,43 +371,79 @@ class GCSApp(QWidget):
             return
 
         try:
-            # Güvenli veri alımı - None kontrolü
-            speed = getattr(self.vehicle, 'groundspeed', 0.0) or 0.0
-            alt = getattr(self.vehicle.location.global_relative_frame, 'alt', 0.0) or 0.0 if hasattr(self.vehicle, 'location') else 0.0
-            heading = getattr(self.vehicle, 'heading', 0) or 0
-            mode = getattr(self.vehicle.mode, 'name', 'UNKNOWN') if hasattr(self.vehicle, 'mode') else 'UNKNOWN'
+            # GERÇEK ARDUPİLOT VERİLERİ - sadece mevcut olanları al
+            speed = getattr(self.vehicle, 'groundspeed', None)
+            heading = getattr(self.vehicle, 'heading', None)  
+            mode = getattr(self.vehicle.mode, 'name', None) if hasattr(self.vehicle, 'mode') else None
             
-            # Hızlı return eğer henüz veriler yüklenmemişse
-            if heading is None or heading == 0:
-                self.log_message_received.emit("Telemetri verileri henüz yükleniyor...")
-                return
+            # Location güvenli alım
+            alt = None
+            if hasattr(self.vehicle, 'location') and self.vehicle.location:
+                if hasattr(self.vehicle.location, 'global_relative_frame'):
+                    alt = getattr(self.vehicle.location.global_relative_frame, 'alt', None)
             
-            self.telemetry_values["Hız:"].setText(f"{speed:.1f} m/s")
+            # Armed durumu
+            armed = getattr(self.vehicle, 'armed', None)
             
-            # Setpoint mantığı - gerçekçi hedef değerler
-            current_time = time.time()
-            
-            if mode == "AUTO":
-                # Otomatik modda: mission waypoint'lere göre değişken hedefler
-                speed_setpoint = 3.0 + 0.5 * math.sin(current_time * 0.1)  # 2.5-3.5 arası
-                heading_setpoint = (heading + 10) % 360  # Hedef yöne doğru
-            elif mode == "GUIDED": 
-                # Guided modda: komut edilen sabit hedefler
-                speed_setpoint = 2.5
-                heading_setpoint = (heading + 20) % 360  # Belirli bir hedefe doğru
-            else:  # MANUAL mode
-                # Manuel modda: pilotun throttle/yön girdilerine göre hedefler
-                # RC input veya joystick girdilerine göre belirlenir (şimdilik simüle)
-                throttle_input = 0.6 + 0.3 * math.sin(current_time * 0.05)  # Yavaş değişen throttle
-                speed_setpoint = throttle_input * 4.0  # 0-4 m/s arası throttle ile
+            # Veri eksikse: gösterme 
+            if speed is None:
+                self.telemetry_values["Hız:"].setText("Veri yok")
+            else:
+                self.telemetry_values["Hız:"].setText(f"{speed:.1f} m/s")
                 
-                # Heading setpoint: pilotun yön komutu (simüle)
-                heading_setpoint = (heading + 5 * math.sin(current_time * 0.08)) % 360
+            if heading is None:
+                self.telemetry_values["Heading:"].setText("Veri yok")
+            else:
+                self.telemetry_values["Heading:"].setText(f"{heading}°")
+                
+            if alt is None:
+                self.telemetry_values["Yükseklik:"].setText("Veri yok") 
+            else:
+                self.telemetry_values["Yükseklik:"].setText(f"{alt:.1f} m")
+                
+            if mode is None:
+                self.telemetry_values["Mod:"].setText("UNKNOWN")
+            else:
+                self.telemetry_values["Mod:"].setText(mode)
             
-            self.telemetry_values["Hız Setpoint:"].setText(f"{speed_setpoint:.1f} m/s")
+            # GERÇEK SETPOINT VERİLERİ - ArduPilot'tan al
+            # Gerçek target bearing (NAV_CONTROLLER_OUTPUT mesajından)
+            target_bearing = getattr(self.vehicle, 'target_bearing', None)
+            nav_bearing = getattr(self.vehicle, 'nav_bearing', None)
+            
+            # Gerçek groundspeed setpoint  
+            groundspeed_setpoint = getattr(self.vehicle, 'groundspeed_setpoint', None)
+            
+            # Mission durumu kontrol et
+            current_waypoint = getattr(self.vehicle, 'commands', None)
+            
+            if mode in ["AUTO", "GUIDED", "RTL"]:
+                # Autopilot modlarında gerçek setpoint'ler
+                if target_bearing is not None:
+                    self.telemetry_values["Heading Setpoint:"].setText(f"{target_bearing:.0f}°")
+                elif nav_bearing is not None:
+                    self.telemetry_values["Heading Setpoint:"].setText(f"{nav_bearing:.0f}°")
+                else:
+                    self.telemetry_values["Heading Setpoint:"].setText("Hesaplanıyor...")
+                
+                if groundspeed_setpoint is not None:
+                    self.telemetry_values["Hız Setpoint:"].setText(f"{groundspeed_setpoint:.1f} m/s")
+                else:
+                    # Alternatif: vehicle.parameters'dan WPNAV_SPEED al
+                    wpnav_speed = getattr(self.vehicle.parameters, 'WPNAV_SPEED', None)
+                    if wpnav_speed:
+                        speed_ms = wpnav_speed / 100.0  # cm/s → m/s
+                        self.telemetry_values["Hız Setpoint:"].setText(f"{speed_ms:.1f} m/s")
+                    else:
+                        self.telemetry_values["Hız Setpoint:"].setText("Veri yok")
+                
+            else:  # MANUAL, STABILIZE, etc.
+                # Manuel modda: setpoint YOK
+                self.telemetry_values["Hız Setpoint:"].setText("MANUAL")
+                self.telemetry_values["Heading Setpoint:"].setText("MANUAL")
+            
             self.telemetry_values["Yükseklik:"].setText(f"{alt:.1f} m")
             self.telemetry_values["Heading:"].setText(f"{heading}°")
-            self.telemetry_values["Heading Setpoint:"].setText(f"{heading_setpoint:.0f}°")
             
             # Attitude - basit
             pitch_deg = math.degrees(self.vehicle.attitude.pitch)
@@ -449,8 +485,15 @@ class GCSApp(QWidget):
                     
                     # None kontrolü yap
                     if left_pwm is not None and right_pwm is not None:
-                        # Debug: Gerçek PWM değerlerini logla
-                        self.log_message_received.emit(f"PWM Debug - Sol: {left_pwm}μs, Sağ: {right_pwm}μs")
+                        # Debug: Tüm PWM kanallarını kontrol et
+                        all_channels_debug = []
+                        for ch in range(1, 9):  # Kanal 1-8 arası kontrol et
+                            pwm_val = self.vehicle.channels.get(str(ch))
+                            if pwm_val is not None:
+                                all_channels_debug.append(f"CH{ch}:{pwm_val}")
+                        
+                        debug_msg = f"Aktif PWM Kanalları: {', '.join(all_channels_debug)}"
+                        self.log_message_received.emit(debug_msg)
                         
                         # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL
                         left_power = max(0, min(100, (left_pwm - 1000) / 10))  # 1000-2000 → 0-100
@@ -475,52 +518,31 @@ class GCSApp(QWidget):
             except Exception as e:
                 self.log_message_received.emit(f"Thruster verisi okunamadı: {e}")
         
-        # SİMÜLASYON MODU (bağlantı yok veya veri yok)
-        # Basit ve gerçekçi simülasyon
-        current_time = time.time()
-        
-        if self.is_connected and self.vehicle:
-            # Bağlantılıyken: Armed/Disarmed durumuna göre
-            is_armed = getattr(self.vehicle, 'armed', False)
+        # SADECE GERÇEK VERİ - SİMÜLASYON YOK
+        if not self.is_connected or not self.vehicle:
+            # Bağlantı yoksa: hiçbir şey gösterme
+            for i in range(2):
+                self.thruster_labels[i].setText(f"T{i+1}: NO CONNECTION")
+                self.thruster_labels[i].setStyleSheet("border: 1px solid gray; padding: 3px; font-size: 9px; color: gray;")
+            return
             
-            if is_armed:
-                # Armed ise: hız ve moda göre basit thruster simülasyonu
-                speed = getattr(self.vehicle, 'groundspeed', 0)
-                mode = getattr(self.vehicle.mode, 'name', 'MANUAL') if hasattr(self.vehicle, 'mode') else 'MANUAL'
-                
-                if mode == 'AUTO':
-                    left_power = min(60, speed * 30)  # Otomatik modda düşük güç
-                    right_power = min(60, speed * 30)
-                elif mode == 'GUIDED':
-                    left_power = min(40, speed * 25)  # Guided modda çok düşük
-                    right_power = min(40, speed * 25)
-                else:  # MANUAL
-                    left_power = min(80, speed * 35)  # Manuel modda yüksek
-                    right_power = min(80, speed * 35)
-            else:
-                # Disarmed ise: %0 güç (güvenlik)
-                left_power = 0
-                right_power = 0
-        else:
-            # Bağlantı yokken: Sabit değerler (gerçek GCS davranışı)
-            left_power = 0   # Bağlantı yok = 0% güç
-            right_power = 0  # Güvenlik nedeniyle
+        # PWM değerleri yoksa: bekle
+        if not hasattr(self.vehicle, 'channels') or self.vehicle.channels is None:
+            for i in range(2):
+                self.thruster_labels[i].setText(f"T{i+1}: PWM YOK")
+                self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 3px; font-size: 9px; color: orange;")
+            return
+            
+        # PWM verisi yoksa: gösterme
+        left_pwm = self.vehicle.channels.get('1')
+        right_pwm = self.vehicle.channels.get('3')
         
-        motor_powers = [left_power, right_power]
-        sides = ["Sol", "Sağ"]
-        
-        # Bağlantı durumuna göre etiket
-        if self.is_connected and self.vehicle:
-            status_text = "SIM"  # Bağlı ama gerçek data yok
-            base_color = "orange"  # Simülasyon rengi
-        else:
-            status_text = "OFF"  # Hiç bağlantı yok
-            base_color = "gray"  # Bağlantısız rengi
-        
-        for i, power in enumerate(motor_powers):
-            color = base_color if not self.is_connected else ("green" if power < 70 else "orange" if power < 90 else "red")
-            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {status_text}")
-            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
+        if left_pwm is None or right_pwm is None:
+            for i in range(2):
+                side = "Sol" if i == 0 else "Sağ"
+                self.thruster_labels[i].setText(f"{side}: SERVO VERİSİ YOK")
+                self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 3px; font-size: 9px; color: orange;")
+            return
 
     def location_callback(self, vehicle, attr_name, value):
         if value and self.vehicle.heading is not None:

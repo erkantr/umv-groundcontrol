@@ -47,6 +47,9 @@ class GCSApp(QWidget):
         self.is_connected = False
         self.waypoints = []
         self.current_heading = 0
+        
+        # SERVO_OUTPUT_RAW cache - DroneKit channels güncellenmiyor
+        self.servo_output_cache = {}
         self.initUI()
         self.log_message_received.connect(self.update_log_safe)
         self.connection_status_changed.connect(self.on_connection_status_changed)
@@ -372,6 +375,9 @@ class GCSApp(QWidget):
             self.test_right_btn.setEnabled(False)
             self.test_stop_btn.setEnabled(False)
             self.vehicle = None
+            
+            # Cache'i temizle
+            self.servo_output_cache.clear()
 
     def request_servo_output(self):
         """ArduPilot'tan SERVO_OUTPUT_RAW mesajını request et"""
@@ -456,7 +462,7 @@ class GCSApp(QWidget):
                 else:
                     self.log_message_received.emit("✗ vehicle.channels attribute yok")
                 
-                # Servo output raw message listener ekle - SADECE LOG
+                # Servo output raw message listener ekle - CACHE'E KAYDET
                 def servo_output_listener(vehicle, name, message):
                     # Servo değerlerini parse et
                     servo_values = [
@@ -466,8 +472,10 @@ class GCSApp(QWidget):
                     active_servos = [(i+1, val) for i, val in enumerate(servo_values) if val != 0]
                     self.log_message_received.emit(f"✓ SERVO_OUTPUT_RAW alındı! Aktif: {active_servos}")
                     
-                    # DroneKit otomatik olarak vehicle.channels'ı güncelleyecek
-                    # Manuel update yapmıyoruz - read-only çünkü
+                    # Cache'e kaydet - DroneKit channels güncellenmiyor
+                    for i, val in enumerate(servo_values):
+                        if val != 0:  # Sadece aktif kanalları kaydet
+                            self.servo_output_cache[str(i+1)] = val
                                 
                 self.vehicle.on_message('SERVO_OUTPUT_RAW')(servo_output_listener)
                 self.log_message_received.emit("✓ SERVO_OUTPUT_RAW listener eklendi")
@@ -482,18 +490,16 @@ class GCSApp(QWidget):
 
     def periodic_channel_check(self):
         """Periyodik olarak channel durumunu kontrol et"""
-        if self.vehicle and hasattr(self.vehicle, 'channels'):
+        if self.vehicle:
             try:
-                if self.vehicle.channels is not None:
-                    # Channel verilerini logla
-                    ch1 = self.vehicle.channels.get('1', 'YOK')
-                    ch2 = self.vehicle.channels.get('2', 'YOK') 
-                    ch3 = self.vehicle.channels.get('3', 'YOK')
-                    ch4 = self.vehicle.channels.get('4', 'YOK')
-                    
-                    self.log_message_received.emit(f"Periyodik check: CH1={ch1}, CH2={ch2}, CH3={ch3}, CH4={ch4}")
-                else:
-                    self.log_message_received.emit("Periyodik check: channels=None")
+                # Cache durumunu kontrol et
+                ch1 = self.servo_output_cache.get('1', 'YOK')
+                ch2 = self.servo_output_cache.get('2', 'YOK') 
+                ch3 = self.servo_output_cache.get('3', 'YOK')
+                ch4 = self.servo_output_cache.get('4', 'YOK')
+                
+                cache_count = len([x for x in [ch1, ch2, ch3, ch4] if x != 'YOK'])
+                self.log_message_received.emit(f"Cache check: CH1={ch1}, CH2={ch2}, CH3={ch3}, CH4={ch4} (Aktif: {cache_count})")
                     
                 # 10 saniye sonra tekrar kontrol et
                 QTimer.singleShot(10000, self.periodic_channel_check)
@@ -692,52 +698,50 @@ class GCSApp(QWidget):
         if self.is_connected and self.vehicle:
             # GERÇEK VERİ: Pixhawk'tan servo çıkışları (PWM 1000-2000)
             # self.vehicle.channels['1'] = Sol thruster PWM
-            # self.vehicle.channels['3'] = Sağ thruster PWM
+            # SERVO_OUTPUT_RAW cache'den PWM değerlerini al
             try:
-                # ArduPilot SERVO_OUTPUT_RAW mesajından alınacak
-                if hasattr(self.vehicle, 'channels') and self.vehicle.channels is not None:
-                    # PWM değerlerini güvenli şekilde al - gerçek servo kanalları
-                    # SERVO1_FUNCTION=74 (Motor2/Sağ), SERVO2_FUNCTION=73 (Motor1/Sol)
-                    right_pwm = self.vehicle.channels.get('1')  # Kanal 1: Sağ thruster (SERVO_FUNCTION=74)
-                    left_pwm = self.vehicle.channels.get('2')   # Kanal 2: Sol thruster (SERVO_FUNCTION=73)
+                # Cache'den PWM değerlerini al
+                # SERVO1_FUNCTION=74 (Motor2/Sağ), SERVO2_FUNCTION=73 (Motor1/Sol)
+                right_pwm = self.servo_output_cache.get('1')  # Kanal 1: Sağ thruster (SERVO_FUNCTION=74)
+                left_pwm = self.servo_output_cache.get('2')   # Kanal 2: Sol thruster (SERVO_FUNCTION=73)
+                
+                # None kontrolü yap
+                if left_pwm is not None and right_pwm is not None:
+                    # Debug: Tüm PWM kanallarını kontrol et
+                    all_channels_debug = []
+                    for ch in range(1, 9):  # Kanal 1-8 arası kontrol et
+                        pwm_val = self.servo_output_cache.get(str(ch))
+                        if pwm_val is not None:
+                            all_channels_debug.append(f"CH{ch}:{pwm_val}")
                     
-                    # None kontrolü yap
-                    if left_pwm is not None and right_pwm is not None:
-                        # Debug: Tüm PWM kanallarını kontrol et
-                        all_channels_debug = []
-                        for ch in range(1, 9):  # Kanal 1-8 arası kontrol et
-                            pwm_val = self.vehicle.channels.get(str(ch))
-                            if pwm_val is not None:
-                                all_channels_debug.append(f"CH{ch}:{pwm_val}")
-                        
-                        debug_msg = f"PWM Kanalları: {', '.join(all_channels_debug)} | SERVO1_FUNC=73(Motor2), SERVO2_FUNC=74(Motor1)"
-                        self.log_message_received.emit(debug_msg)
-                        
-                        # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL  
-                        left_power = max(0, min(100, (left_pwm - 1000) / 10)) if left_pwm else 0
-                        right_power = max(0, min(100, (right_pwm - 1000) / 10)) if right_pwm else 0
-                        
-                        # Sol motor ilk (UI sırası), Sağ motor ikinci
-                        motor_powers = [left_power, right_power]
-                        pwm_values = [left_pwm if left_pwm else 0, right_pwm if right_pwm else 0]
-                        sides = ["Sol", "Sağ"]
-                        channels = ["CH2(73)", "CH1(74)"]  # Debug için kanal ve servo function
-                        
-                        for i, power in enumerate(motor_powers):
-                            color = "green" if power < 70 else "orange" if power < 90 else "red"
-                            real_pwm = pwm_values[i]  # Gerçek PWM değerini kullan
-                            channel_info = channels[i]  # Kanal ve servo function bilgisi
-                            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {real_pwm}μs {channel_info}")
-                            self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
-                        return
-                    else:
-                        # PWM değerleri henüz None
-                        self.log_message_received.emit("Thruster PWM verileri henüz yüklenmedi")
+                    debug_msg = f"Cache PWM: {', '.join(all_channels_debug)} | SERVO1_FUNC=74(Sağ), SERVO2_FUNC=73(Sol)"
+                    self.log_message_received.emit(debug_msg)
+                    
+                    # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL  
+                    left_power = max(0, min(100, (left_pwm - 1000) / 10)) if left_pwm else 0
+                    right_power = max(0, min(100, (right_pwm - 1000) / 10)) if right_pwm else 0
+                    
+                    # Sol motor ilk (UI sırası), Sağ motor ikinci
+                    motor_powers = [left_power, right_power]
+                    pwm_values = [left_pwm if left_pwm else 0, right_pwm if right_pwm else 0]
+                    sides = ["Sol", "Sağ"]
+                    channels = ["CH2(73)", "CH1(74)"]  # Debug için kanal ve servo function
+                    
+                    for i, power in enumerate(motor_powers):
+                        color = "green" if power < 70 else "orange" if power < 90 else "red"
+                        real_pwm = pwm_values[i]  # Gerçek PWM değerini kullan
+                        channel_info = channels[i]  # Kanal ve servo function bilgisi
+                        self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {real_pwm}μs {channel_info}")
+                        self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
+                    return
                 else:
-                    # Servo çıkışları henüz yüklenmemişse simülasyon yap
-                    pass
+                    # PWM değerleri henüz cache'de yok
+                    cache_status = f"Cache durum: CH1={self.servo_output_cache.get('1', 'YOK')}, CH2={self.servo_output_cache.get('2', 'YOK')}"
+                    self.log_message_received.emit(f"SERVO_OUTPUT cache henüz boş - {cache_status}")
             except Exception as e:
-                self.log_message_received.emit(f"Thruster verisi okunamadı: {e}")
+                self.log_message_received.emit(f"Thruster cache okunamadı: {e}")
+                import traceback
+                self.log_message_received.emit(f"Stack trace: {traceback.format_exc()}")
         
         # SADECE GERÇEK VERİ - SİMÜLASYON YOK
         if not self.is_connected or not self.vehicle:
@@ -747,20 +751,8 @@ class GCSApp(QWidget):
                 self.thruster_labels[i].setStyleSheet("border: 1px solid gray; padding: 3px; font-size: 9px; color: gray;")
             return
             
-        # PWM değerleri yoksa: bekle ve debug yap
-        if not hasattr(self.vehicle, 'channels') or self.vehicle.channels is None:
-            self.log_message_received.emit("vehicle.channels henüz mevcut değil - SERVO_OUTPUT_RAW mesajı bekleniyor")
-            for i in range(2):
-                self.thruster_labels[i].setText(f"T{i+1}: SERVO_OUTPUT bekleniyor")
-                self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 3px; font-size: 9px; color: orange;")
-            return
-            
-        # PWM verisi yoksa: gösterme  
-        # SERVO1_FUNCTION=74 (Motor2/Sağ), SERVO2_FUNCTION=73 (Motor1/Sol)
-        right_pwm = self.vehicle.channels.get('1')  # Kanal 1: Sağ thruster
-        left_pwm = self.vehicle.channels.get('2')   # Kanal 2: Sol thruster
-        
-        if left_pwm is None or right_pwm is None:
+        # Cache boşsa: bekle  
+        if not self.servo_output_cache or '1' not in self.servo_output_cache or '2' not in self.servo_output_cache:
             for i in range(2):
                 side = "Sol" if i == 0 else "Sağ"
                 self.thruster_labels[i].setText(f"{side}: SERVO VERİSİ YOK")

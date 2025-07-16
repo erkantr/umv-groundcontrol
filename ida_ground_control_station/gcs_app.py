@@ -221,86 +221,36 @@ class GCSApp(QWidget):
         mission_title.setFont(QFont('Arial', 14, QFont.Bold))
         mission_control_layout.addWidget(mission_title)
         
-        # Mode butonları
-        mode_layout = QHBoxLayout()
-        self.mode_buttons = []
-        modes = ["MANUAL", "AUTO", "GUIDED"]
-        for mode in modes:
-            btn = QPushButton(mode)
-            btn.clicked.connect(lambda checked, m=mode: self.change_mode(m))
+        mode_buttons_layout = QHBoxLayout()
+        self.stabilize_button = QPushButton("STABILIZE")
+        self.auto_button = QPushButton("AUTO")
+        self.guided_button = QPushButton("GUIDED")
+        mode_buttons_layout.addWidget(self.stabilize_button)
+        mode_buttons_layout.addWidget(self.auto_button)
+        mode_buttons_layout.addWidget(self.guided_button)
+        mission_control_layout.addLayout(mode_buttons_layout)
+        
+        self.stabilize_button.clicked.connect(lambda: self.set_vehicle_mode("STABILIZE"))
+        self.auto_button.clicked.connect(lambda: self.set_vehicle_mode("AUTO"))
+        self.guided_button.clicked.connect(lambda: self.set_vehicle_mode("GUIDED"))
+
+        mission_buttons_layout = QHBoxLayout()
+        self.upload_mission_button = QPushButton("Rotayı Gönder")
+        self.read_mission_button = QPushButton("Rotayı Oku")
+        self.clear_mission_button = QPushButton("Rotayı Temizle")
+        mission_buttons_layout.addWidget(self.upload_mission_button)
+        mission_buttons_layout.addWidget(self.read_mission_button)
+        mission_buttons_layout.addWidget(self.clear_mission_button)
+        mission_control_layout.addLayout(mission_buttons_layout)
+        
+        self.upload_mission_button.clicked.connect(self.send_mission_to_vehicle)
+        self.read_mission_button.clicked.connect(self.read_mission_from_vehicle)
+        self.clear_mission_button.clicked.connect(self.clear_mission)
+
+        self.mode_buttons = [self.stabilize_button, self.auto_button, self.guided_button, 
+                           self.upload_mission_button, self.read_mission_button, self.clear_mission_button]
+        for btn in self.mode_buttons:
             btn.setEnabled(False)
-            mode_layout.addWidget(btn)
-            self.mode_buttons.append(btn)
-        mission_control_layout.addLayout(mode_layout)
-        
-        # PWM Test Kontrol Paneli
-        pwm_title = QLabel("PWM Test")
-        pwm_title.setFont(QFont('Arial', 12, QFont.Bold))
-        mission_control_layout.addWidget(pwm_title)
-        
-        pwm_test_layout = QHBoxLayout()
-        self.test_left_btn = QPushButton("Sol Test")
-        self.test_left_btn.clicked.connect(lambda: self.test_thruster('left'))
-        self.test_left_btn.setEnabled(False)
-        
-        self.test_right_btn = QPushButton("Sağ Test") 
-        self.test_right_btn.clicked.connect(lambda: self.test_thruster('right'))
-        self.test_right_btn.setEnabled(False)
-        
-        self.test_stop_btn = QPushButton("STOP")
-        self.test_stop_btn.clicked.connect(self.stop_thrusters)
-        self.test_stop_btn.setEnabled(False)
-        self.test_stop_btn.setStyleSheet("background-color: red; color: white;")
-        
-        pwm_test_layout.addWidget(self.test_left_btn)
-        pwm_test_layout.addWidget(self.test_right_btn)
-        pwm_test_layout.addWidget(self.test_stop_btn)
-        mission_control_layout.addLayout(pwm_test_layout)
-        
-        # Rota Kontrol Paneli  
-        heading_title = QLabel("Rota Kontrolü")
-        heading_title.setFont(QFont('Arial', 12, QFont.Bold))
-        mission_control_layout.addWidget(heading_title)
-        
-        heading_layout = QVBoxLayout()
-        
-        # Mevcut rota gösterimi
-        self.current_heading_label = QLabel("Mevcut Rota: --°")
-        self.current_heading_label.setStyleSheet("border: 1px solid gray; padding: 5px; background-color: #f0f0f0;")
-        heading_layout.addWidget(self.current_heading_label)
-        
-        # Rota butonları
-        heading_btn_layout = QHBoxLayout()
-        
-        self.read_heading_btn = QPushButton("Rotayı Oku")
-        self.read_heading_btn.clicked.connect(self.read_current_heading)
-        self.read_heading_btn.setEnabled(False)
-        
-        self.send_heading_btn = QPushButton("Rotayı Gönder") 
-        self.send_heading_btn.clicked.connect(self.send_heading_command)
-        self.send_heading_btn.setEnabled(False)
-        
-        self.clear_heading_btn = QPushButton("Rotayı Sil")
-        self.clear_heading_btn.clicked.connect(self.clear_heading_command)
-        self.clear_heading_btn.setEnabled(False)
-        
-        heading_btn_layout.addWidget(self.read_heading_btn)
-        heading_btn_layout.addWidget(self.send_heading_btn)
-        heading_btn_layout.addWidget(self.clear_heading_btn)
-        
-        heading_layout.addLayout(heading_btn_layout)
-        
-        # Hedef rota input
-        target_heading_layout = QHBoxLayout()
-        target_heading_layout.addWidget(QLabel("Hedef Rota:"))
-        self.target_heading_input = QLineEdit()
-        self.target_heading_input.setPlaceholderText("0-359°")
-        self.target_heading_input.setMaxLength(3)
-        target_heading_layout.addWidget(self.target_heading_input)
-        target_heading_layout.addWidget(QLabel("°"))
-        
-        heading_layout.addLayout(target_heading_layout)
-        mission_control_layout.addLayout(heading_layout)
 
         # ... (main_layout'a widget'ların eklenmesi)
         main_layout.addWidget(sidebar_scroll)
@@ -402,16 +352,6 @@ class GCSApp(QWidget):
             QTimer.singleShot(100, self.update_telemetry)  # 100ms sonra
             for btn in self.mode_buttons:
                 btn.setEnabled(True)
-                
-            # PWM test butonlarını aktif et
-            self.test_left_btn.setEnabled(True)
-            self.test_right_btn.setEnabled(True)
-            self.test_stop_btn.setEnabled(True)
-            
-            # Rota butonlarını aktif et
-            self.read_heading_btn.setEnabled(True)
-            self.send_heading_btn.setEnabled(True)
-            self.clear_heading_btn.setEnabled(True)
         else:
             self.connect_button.setText("BAĞLAN")
             self.connect_button.setStyleSheet("")
@@ -419,16 +359,6 @@ class GCSApp(QWidget):
             self.attitude_timer.stop()
             for btn in self.mode_buttons:
                 btn.setEnabled(False)
-                
-            # PWM test butonlarını deaktif et
-            self.test_left_btn.setEnabled(False)
-            self.test_right_btn.setEnabled(False)
-            self.test_stop_btn.setEnabled(False)
-            
-            # Rota butonlarını deaktif et
-            self.read_heading_btn.setEnabled(False)
-            self.send_heading_btn.setEnabled(False)
-            self.clear_heading_btn.setEnabled(False)
             self.vehicle = None
             
             # Cache'i temizle

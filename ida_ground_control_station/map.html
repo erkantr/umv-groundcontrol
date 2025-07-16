@@ -60,7 +60,7 @@
                 // İkonu aracın yönüne göre döndür - düzeltilmiş
                 var iconElement = vehicleMarker._icon.firstChild;
                 if (iconElement) {
-                    iconElement.style.transform = `rotate(${heading}deg)`; // 90 derece offset kaldırıldı
+                    iconElement.style.transform = `rotate(${heading + 90}deg)`;
                 }
 
                 // Sadece ilk bağlantıda veya autoFollow aktifse haritayı takip et

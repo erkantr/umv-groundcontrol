@@ -793,9 +793,9 @@ class GCSApp(QWidget):
                             direction = "NEUTRAL"
                             power = 0  # Neutral'da güç 0 göster
                         elif diff > 25:
-                            direction = "İLERİ"
-                        else:
                             direction = "GERİ"
+                        else:
+                            direction = "İLERİ"
                         return power, direction
                     
                     left_power, left_dir = calculate_thruster_power(left_pwm)

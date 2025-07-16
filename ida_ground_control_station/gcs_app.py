@@ -172,8 +172,8 @@ class GCSApp(QWidget):
         for i in range(2):  # Deniz aracı için 2 thruster
             thruster_label = QLabel(f"T{i+1}: 0%")
             thruster_label.setStyleSheet("border: 1px solid gray; padding: 3px; font-size: 9px;")
-            thruster_label.setMinimumWidth(120)  # Minimum genişlik ekle
-            thruster_label.setMaximumWidth(120)  # Sabit genişlik için
+            thruster_label.setMinimumWidth(180)  # Kanal bilgisi için daha geniş
+            thruster_label.setMaximumWidth(180)  # Sabit genişlik için
             thruster_layout.addWidget(thruster_label)
             self.thruster_labels.append(thruster_label)
         
@@ -479,9 +479,10 @@ class GCSApp(QWidget):
             try:
                 # ArduPilot SERVO_OUTPUT_RAW mesajından alınacak
                 if hasattr(self.vehicle, 'channels') and self.vehicle.channels is not None:
-                    # PWM değerlerini güvenli şekilde al
-                    left_pwm = self.vehicle.channels.get('1')
-                    right_pwm = self.vehicle.channels.get('3')
+                    # PWM değerlerini güvenli şekilde al - gerçek servo kanalları
+                    # SERVO1_FUNCTION=74 (Motor2/Sağ), SERVO2_FUNCTION=73 (Motor1/Sol)
+                    right_pwm = self.vehicle.channels.get('1')  # Kanal 1: Sağ thruster (SERVO_FUNCTION=74)
+                    left_pwm = self.vehicle.channels.get('2')   # Kanal 2: Sol thruster (SERVO_FUNCTION=73)
                     
                     # None kontrolü yap
                     if left_pwm is not None and right_pwm is not None:
@@ -492,21 +493,24 @@ class GCSApp(QWidget):
                             if pwm_val is not None:
                                 all_channels_debug.append(f"CH{ch}:{pwm_val}")
                         
-                        debug_msg = f"Aktif PWM Kanalları: {', '.join(all_channels_debug)}"
+                        debug_msg = f"PWM Kanalları: {', '.join(all_channels_debug)} | SERVO1_FUNC=74(Motor2), SERVO2_FUNC=73(Motor1)"
                         self.log_message_received.emit(debug_msg)
                         
-                        # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL
-                        left_power = max(0, min(100, (left_pwm - 1000) / 10))  # 1000-2000 → 0-100
-                        right_power = max(0, min(100, (right_pwm - 1000) / 10))  # 1000-2000 → 0-100
+                        # PWM'i yüzdeye çevir (1000-2000 → 0-100%) - DOĞRU FORMÜL  
+                        left_power = max(0, min(100, (left_pwm - 1000) / 10)) if left_pwm else 0
+                        right_power = max(0, min(100, (right_pwm - 1000) / 10)) if right_pwm else 0
                         
+                        # Sol motor ilk (UI sırası), Sağ motor ikinci
                         motor_powers = [left_power, right_power]
-                        pwm_values = [left_pwm, right_pwm]  # Gerçek PWM değerleri
+                        pwm_values = [left_pwm if left_pwm else 0, right_pwm if right_pwm else 0]
                         sides = ["Sol", "Sağ"]
+                        channels = ["CH2(73)", "CH1(74)"]  # Debug için kanal ve servo function
                         
                         for i, power in enumerate(motor_powers):
                             color = "green" if power < 70 else "orange" if power < 90 else "red"
                             real_pwm = pwm_values[i]  # Gerçek PWM değerini kullan
-                            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {real_pwm}μs")
+                            channel_info = channels[i]  # Kanal ve servo function bilgisi
+                            self.thruster_labels[i].setText(f"{sides[i]}: {power:.0f}% {real_pwm}μs {channel_info}")
                             self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 3px; font-size: 9px; color: {color};")
                         return
                     else:
@@ -533,9 +537,10 @@ class GCSApp(QWidget):
                 self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 3px; font-size: 9px; color: orange;")
             return
             
-        # PWM verisi yoksa: gösterme
-        left_pwm = self.vehicle.channels.get('1')
-        right_pwm = self.vehicle.channels.get('3')
+        # PWM verisi yoksa: gösterme  
+        # SERVO1_FUNCTION=74 (Motor2/Sağ), SERVO2_FUNCTION=73 (Motor1/Sol)
+        right_pwm = self.vehicle.channels.get('1')  # Kanal 1: Sağ thruster
+        left_pwm = self.vehicle.channels.get('2')   # Kanal 2: Sol thruster
         
         if left_pwm is None or right_pwm is None:
             for i in range(2):

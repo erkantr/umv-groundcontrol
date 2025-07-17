@@ -3,6 +3,8 @@ import os
 import time
 import threading
 import math
+from collections import deque
+import pyqtgraph as pg
 from PyQt5.QtCore import QUrl, Qt, QTimer, pyqtSignal, QObject, pyqtSlot, QDateTime
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QLabel,
                              QTextEdit, QHBoxLayout, QMessageBox, QGridLayout,
@@ -52,6 +54,18 @@ class GCSApp(QWidget):
         
         # SERVO_OUTPUT_RAW cache - DroneKit channels güncellenmiyor
         self.servo_output_cache = {}
+        
+        # Grafik veri bufferları (son 100 veri noktası)
+        self.max_data_points = 100
+        self.time_data = deque(maxlen=self.max_data_points)
+        self.speed_data = deque(maxlen=self.max_data_points)
+        self.speed_setpoint_data = deque(maxlen=self.max_data_points)
+        self.heading_data = deque(maxlen=self.max_data_points)
+        self.heading_setpoint_data = deque(maxlen=self.max_data_points)
+        self.thruster_left_data = deque(maxlen=self.max_data_points)
+        self.thruster_right_data = deque(maxlen=self.max_data_points)
+        self.start_time = time.time()
+        
         self.initUI()
         self.log_message_received.connect(self.update_log_safe)
         self.connection_status_changed.connect(self.on_connection_status_changed)
@@ -249,6 +263,45 @@ class GCSApp(QWidget):
         self.status_label.setWordWrap(True)
         status_layout.addWidget(self.status_label)
 
+        # Grafikler Paneli
+        graphs_frame = QFrame()
+        graphs_frame.setFrameShape(QFrame.StyledPanel)
+        graphs_layout = QVBoxLayout(graphs_frame)
+        sidebar_layout.addWidget(graphs_frame)
+        graphs_title = QLabel("Temel Grafikler")
+        graphs_title.setFont(QFont('Arial', 14, QFont.Bold))
+        graphs_layout.addWidget(graphs_title)
+        
+        # Hız grafiği
+        self.speed_plot = pg.PlotWidget(title="Hız (m/s)")
+        self.speed_plot.setLabel('left', 'Hız', units='m/s')
+        self.speed_plot.setLabel('bottom', 'Zaman', units='s')
+        self.speed_plot.setMaximumHeight(120)
+        self.speed_curve = self.speed_plot.plot(pen='b', name='Gerçek')
+        self.speed_setpoint_curve = self.speed_plot.plot(pen='r', name='Setpoint')
+        self.speed_plot.addLegend()
+        graphs_layout.addWidget(self.speed_plot)
+        
+        # Heading grafiği
+        self.heading_plot = pg.PlotWidget(title="Heading/Yaw (°)")
+        self.heading_plot.setLabel('left', 'Açı', units='°')
+        self.heading_plot.setLabel('bottom', 'Zaman', units='s')
+        self.heading_plot.setMaximumHeight(120)
+        self.heading_curve = self.heading_plot.plot(pen='g', name='Gerçek')
+        self.heading_setpoint_curve = self.heading_plot.plot(pen='orange', name='Setpoint')
+        self.heading_plot.addLegend()
+        graphs_layout.addWidget(self.heading_plot)
+        
+        # Thruster kuvvet grafiği
+        self.thruster_plot = pg.PlotWidget(title="Thruster Kuvveti (%)")
+        self.thruster_plot.setLabel('left', 'Güç', units='%')
+        self.thruster_plot.setLabel('bottom', 'Zaman', units='s')
+        self.thruster_plot.setMaximumHeight(120)
+        self.thruster_left_curve = self.thruster_plot.plot(pen='cyan', name='Sol')
+        self.thruster_right_curve = self.thruster_plot.plot(pen='magenta', name='Sağ')
+        self.thruster_plot.addLegend()
+        graphs_layout.addWidget(self.thruster_plot)
+
         # Görev Kontrol Paneli
         mission_control_frame = QFrame()
         mission_control_frame.setFrameShape(QFrame.StyledPanel)
@@ -301,6 +354,11 @@ class GCSApp(QWidget):
         self.motor_timer = QTimer(self)
         self.motor_timer.timeout.connect(self.update_motor_simulation)
         self.motor_timer.start(1000)  # Motor simülasyonu 1s'de bir - daha az CPU kullanımı
+        
+        # Grafikler için timer
+        self.graphs_timer = QTimer(self)
+        self.graphs_timer.timeout.connect(self.update_graphs)
+        self.graphs_timer.start(250)  # 4Hz grafik güncelleme - smooth görünüm
 
         self.refresh_ports()
     
@@ -394,6 +452,7 @@ class GCSApp(QWidget):
             self.connect_button.setStyleSheet("")
             self.telemetry_timer.stop()
             self.attitude_timer.stop()
+            self.graphs_timer.stop()  # Grafik timer'ını durdur
             for btn in self.mode_buttons:
                 btn.setEnabled(False)
             self.vehicle = None
@@ -701,6 +760,58 @@ class GCSApp(QWidget):
                 else:
                     self.current_heading_label.setText(f"Mevcut Rota: {heading}°")
             
+            # Grafik veri bufferlarını güncelle
+            current_time = time.time() - self.start_time  # Uygulama başlangıcından itibaren saniye
+            self.time_data.append(current_time)
+            
+            # Hız verilerini ekle
+            self.speed_data.append(speed if speed is not None else 0)
+            
+            # Hız setpoint hesapla
+            speed_setpoint = 0
+            if mode in ["AUTO", "GUIDED", "RTL"]:
+                if groundspeed_setpoint is not None:
+                    speed_setpoint = groundspeed_setpoint
+                else:
+                    # Alternatif: vehicle.parameters'dan WPNAV_SPEED al
+                    wpnav_speed = getattr(self.vehicle.parameters, 'WPNAV_SPEED', None)
+                    if wpnav_speed:
+                        speed_setpoint = wpnav_speed / 100.0  # cm/s → m/s
+            self.speed_setpoint_data.append(speed_setpoint)
+            
+            # Heading verilerini ekle
+            self.heading_data.append(heading if heading is not None else 0)
+            
+            # Heading setpoint hesapla
+            heading_setpoint = 0
+            if mode in ["AUTO", "GUIDED", "RTL"]:
+                if target_bearing is not None:
+                    heading_setpoint = target_bearing
+                elif nav_bearing is not None:
+                    heading_setpoint = nav_bearing
+            self.heading_setpoint_data.append(heading_setpoint)
+            
+            # Thruster verilerini ekle (PWM'den güç hesapla)
+            left_power = 0
+            right_power = 0
+            if self.servo_output_cache:
+                left_pwm = self.servo_output_cache.get('2')  # Sol thruster (CH2)
+                right_pwm = self.servo_output_cache.get('1')  # Sağ thruster (CH1)
+                
+                if left_pwm is not None:
+                    left_diff = abs(left_pwm - 1500)
+                    left_power = min(100, left_diff / 5.0) if left_diff > 25 else 0
+                    if left_pwm < 1475:  # Geri yön
+                        left_power = -left_power
+                        
+                if right_pwm is not None:
+                    right_diff = abs(right_pwm - 1500)
+                    right_power = min(100, right_diff / 5.0) if right_diff > 25 else 0
+                    if right_pwm < 1475:  # Geri yön
+                        right_power = -right_power
+                        
+            self.thruster_left_data.append(left_power)
+            self.thruster_right_data.append(right_power)
 
         
         except Exception as e:
@@ -803,6 +914,40 @@ class GCSApp(QWidget):
                 self.thruster_labels[i].setText(f"{side}: VERİ BEKLENİYOR")
                 self.thruster_labels[i].setStyleSheet("border: 1px solid orange; padding: 5px; font-size: 10px; font-weight: bold; color: orange;")
             return
+
+    def update_graphs(self):
+        """Grafikleri günceller"""
+        try:
+            # Eğer veri yoksa grafikleri güncelleme
+            if len(self.time_data) == 0:
+                return
+            
+            # Veri listelerini numpy array'e çevir
+            time_array = list(self.time_data)
+            
+            # Hız grafiği güncelleme
+            if len(self.speed_data) > 0:
+                speed_array = list(self.speed_data)
+                speed_setpoint_array = list(self.speed_setpoint_data)
+                self.speed_curve.setData(time_array, speed_array)
+                self.speed_setpoint_curve.setData(time_array, speed_setpoint_array)
+            
+            # Heading grafiği güncelleme
+            if len(self.heading_data) > 0:
+                heading_array = list(self.heading_data)
+                heading_setpoint_array = list(self.heading_setpoint_data)
+                self.heading_curve.setData(time_array, heading_array)
+                self.heading_setpoint_curve.setData(time_array, heading_setpoint_array)
+            
+            # Thruster grafiği güncelleme
+            if len(self.thruster_left_data) > 0:
+                thruster_left_array = list(self.thruster_left_data)
+                thruster_right_array = list(self.thruster_right_data)
+                self.thruster_left_curve.setData(time_array, thruster_left_array)
+                self.thruster_right_curve.setData(time_array, thruster_right_array)
+                
+        except Exception as e:
+            self.log_message_received.emit(f"Grafik güncelleme hatası: {e}")
 
     def location_callback(self, vehicle, attr_name, value):
         if value and self.vehicle.heading is not None:

@@ -185,26 +185,43 @@ class GCSApp(QWidget):
         # --- GRAFİKLER PANELİ ---
         self.graph_frame = QFrame()
         self.graph_frame.setFrameShape(QFrame.StyledPanel)
+        self.graph_frame.setStyleSheet("QFrame { border: 2px solid #aaa; border-radius: 8px; background: #fff; padding: 2px; }")
         graph_layout = QVBoxLayout(self.graph_frame)
+        graph_layout.setContentsMargins(6, 6, 6, 6)
+        graph_layout.setSpacing(2)
         graph_title = QLabel("Grafikler")
-        graph_title.setFont(QFont('Arial', 14, QFont.Bold))
+        graph_title.setFont(QFont('Arial', 11, QFont.Bold))
+        graph_title.setStyleSheet("color: #333; padding-bottom: 2px;")
         graph_layout.addWidget(graph_title)
         # pyqtgraph plot
-        self.pwm_plot = pg.PlotWidget(title="Thruster PWM Değerleri")
-        self.pwm_plot.addLegend()
-        self.pwm_plot.setLabel('left', 'PWM')
-        self.pwm_plot.setLabel('bottom', 'Zaman (s)')
-        self.pwm_plot.setYRange(900, 2100)
-        self.pwm_plot.showGrid(x=True, y=True)
+        self.pwm_plot = pg.PlotWidget()
+        self.pwm_plot.setFixedHeight(180)
+        self.pwm_plot.setBackground('w')
+        self.pwm_plot.setMenuEnabled(False)
+        self.pwm_plot.setMouseEnabled(x=False, y=False)
+        self.pwm_plot.hideButtons()
+        self.pwm_plot.setLabel('left', 'PWM', color='#333', size='9pt')
+        self.pwm_plot.setLabel('bottom', 'Zaman (s)', color='#333', size='9pt')
+        self.pwm_plot.setTitle("")
+        self.pwm_plot.showGrid(x=True, y=True, alpha=0.12)
+        self.pwm_plot.getAxis('left').setPen(pg.mkPen('#bbb', width=1))
+        self.pwm_plot.getAxis('bottom').setPen(pg.mkPen('#bbb', width=1))
+        self.pwm_plot.getAxis('left').setTextPen(pg.mkPen('#333'))
+        self.pwm_plot.getAxis('bottom').setTextPen(pg.mkPen('#333'))
+        self.pwm_plot.setYRange(900, 2100, padding=0)
+        # Legend minimalist
+        legend = self.pwm_plot.addLegend(offset=(10,10), labelTextColor='#444', brush=pg.mkBrush(255,255,255,200))
+        legend.setColumnCount(2)
+        legend.setMaximumHeight(22)
+        # Plot curve'leri (daha yumuşak renkler)
+        self.left_curve = self.pwm_plot.plot(pen=pg.mkPen('#1976d2', width=2), name="Sol (CH2)")
+        self.right_curve = self.pwm_plot.plot(pen=pg.mkPen('#d32f2f', width=2), name="Sağ (CH1)")
         graph_layout.addWidget(self.pwm_plot)
         # PWM veri bufferları
         self.pwm_time_buffer = []
         self.pwm_left_buffer = []
         self.pwm_right_buffer = []
         self.pwm_max_points = 120  # 2 dakikalık pencere (1s'de 1 örnek)
-        # Plot curve'leri
-        self.left_curve = self.pwm_plot.plot(pen=pg.mkPen('b', width=2), name="Sol (CH2)")
-        self.right_curve = self.pwm_plot.plot(pen=pg.mkPen('r', width=2), name="Sağ (CH1)")
         # --- GRAFİK PANELİNİ LOG FRAME'DEN ÖNCE EKLE ---
         sidebar_layout.addWidget(self.graph_frame)
         
@@ -742,9 +759,6 @@ class GCSApp(QWidget):
                         self.pwm_right_buffer = self.pwm_right_buffer[-self.pwm_max_points:]
                     self.left_curve.setData(self.pwm_time_buffer, self.pwm_left_buffer)
                     self.right_curve.setData(self.pwm_time_buffer, self.pwm_right_buffer)
-                    # --- OTOMATİK KAYAN X-EKSENİ ---
-                    window_sec = 60  # Son 60 saniyeyi göster
-                    self.pwm_plot.setXRange(max(0, t - window_sec), t)
                     # --- LABEL'LARA YAZ ---
                     for i, (power, direction, pwm_val, side, channel_info) in enumerate(motor_data):
                         if direction == "NEUTRAL":

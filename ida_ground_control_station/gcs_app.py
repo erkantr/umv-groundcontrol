@@ -6,10 +6,12 @@ import math
 from PyQt5.QtCore import QUrl, Qt, QTimer, pyqtSignal, QObject, pyqtSlot, QDateTime
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QLabel,
                              QTextEdit, QHBoxLayout, QMessageBox, QGridLayout,
-                             QProgressBar, QGroupBox, QComboBox, QDoubleSpinBox, QDialog, QFormLayout, QFrame, QScrollArea, QLineEdit)
+                             QProgressBar, QGroupBox, QComboBox, QDoubleSpinBox, QDialog, QFormLayout, QFrame, QScrollArea, QLineEdit, QTabWidget)
 from PyQt5.QtGui import QPixmap, QIcon, QTransform, QTextCursor, QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 from PyQt5.QtWebChannel import QWebChannel
+# pyqtgraph import
+import pyqtgraph as pg
 
 # Pixhawk bağlantısı için import edilecek (bu satırları aktif edin)
 from dronekit import connect, VehicleMode, LocationGlobalRelative, APIException
@@ -149,7 +151,6 @@ class GCSApp(QWidget):
         telemetry_title = QLabel("Telemetri")
         telemetry_title.setFont(QFont('Arial', 14, QFont.Bold))
         telemetry_layout.addWidget(telemetry_title, 0, 0, 1, 4)
-
         self.telemetry_values = {
             "Hız:": QLabel("N/A"), "Hız Setpoint:": QLabel("N/A"),
             "Yükseklik:": QLabel("N/A"), "Heading:": QLabel("N/A"), 
@@ -157,36 +158,55 @@ class GCSApp(QWidget):
             "Yaw:": QLabel("N/A"), "GPS Fix:": QLabel("N/A"),
             "Mod:": QLabel("N/A"), "Batarya:": QLabel("N/A")
         }
-        
         row = 1
         for label, value_widget in self.telemetry_values.items():
             telemetry_layout.addWidget(QLabel(label), row, 0)
             telemetry_layout.addWidget(value_widget, row, 1)
             row += 1
-
         self.battery_progress = QProgressBar()
         telemetry_layout.addWidget(QLabel("Batarya Seviyesi:"), row, 0)
         telemetry_layout.addWidget(self.battery_progress, row, 1)
-        
-        # Thruster durumu için basit gösterim (Deniz aracı - 2 motor)
         row += 1
-        thruster_layout = QVBoxLayout()  # Dikey layout - daha iyi görünüm
+        thruster_layout = QVBoxLayout()
         self.thruster_labels = []
-        for i in range(2):  # Deniz aracı için 2 thruster
+        for i in range(2):
             thruster_label = QLabel(f"T{i+1}: 0%")
             thruster_label.setStyleSheet("border: 1px solid gray; padding: 5px; font-size: 10px; font-weight: bold;")
-            thruster_label.setMinimumHeight(25)  # Yükseklik arttır
-            thruster_label.setWordWrap(False)  # Text wrapping kapalı
+            thruster_label.setMinimumHeight(25)
+            thruster_label.setWordWrap(False)
             thruster_layout.addWidget(thruster_label)
             self.thruster_labels.append(thruster_label)
-        
         telemetry_layout.addWidget(QLabel("Thruster'lar:"), row, 0)
         telemetry_layout.addLayout(thruster_layout, row, 1, 1, 2)
-
-        # Attitude Indicator (Gyro) ekle
         self.attitude_indicator = AttitudeIndicator()
         self.attitude_indicator.setFixedSize(120, 120)
         telemetry_layout.addWidget(self.attitude_indicator, 1, 2, 4, 2)
+
+        # --- GRAFİKLER PANELİ ---
+        self.graph_frame = QFrame()
+        self.graph_frame.setFrameShape(QFrame.StyledPanel)
+        graph_layout = QVBoxLayout(self.graph_frame)
+        graph_title = QLabel("Grafikler")
+        graph_title.setFont(QFont('Arial', 14, QFont.Bold))
+        graph_layout.addWidget(graph_title)
+        # pyqtgraph plot
+        self.pwm_plot = pg.PlotWidget(title="Thruster PWM Değerleri")
+        self.pwm_plot.addLegend()
+        self.pwm_plot.setLabel('left', 'PWM')
+        self.pwm_plot.setLabel('bottom', 'Zaman (s)')
+        self.pwm_plot.setYRange(900, 2100)
+        self.pwm_plot.showGrid(x=True, y=True)
+        graph_layout.addWidget(self.pwm_plot)
+        # PWM veri bufferları
+        self.pwm_time_buffer = []
+        self.pwm_left_buffer = []
+        self.pwm_right_buffer = []
+        self.pwm_max_points = 120  # 2 dakikalık pencere (1s'de 1 örnek)
+        # Plot curve'leri
+        self.left_curve = self.pwm_plot.plot(pen=pg.mkPen('b', width=2), name="Sol (CH2)")
+        self.right_curve = self.pwm_plot.plot(pen=pg.mkPen('r', width=2), name="Sağ (CH1)")
+        # --- GRAFİK PANELİNİ LOG FRAME'DEN ÖNCE EKLE ---
+        sidebar_layout.addWidget(self.graph_frame)
         
         # Log Paneli
         log_frame = QFrame()
@@ -615,36 +635,23 @@ class GCSApp(QWidget):
                 self.telemetry_values["Mod:"].setText(mode)
             
             # GERÇEK SETPOINT VERİLERİ - ArduPilot'tan al
-            # Gerçek target bearing (NAV_CONTROLLER_OUTPUT mesajından)
-            target_bearing = getattr(self.vehicle, 'target_bearing', None)
-            nav_bearing = getattr(self.vehicle, 'nav_bearing', None)
-            
-            # Gerçek groundspeed setpoint  
-            groundspeed_setpoint = getattr(self.vehicle, 'groundspeed_setpoint', None)
-            
-            # Mission durumu kontrol et
-            current_waypoint = getattr(self.vehicle, 'commands', None)
-            
             if mode in ["AUTO", "GUIDED", "RTL"]:
-                # Autopilot modlarında gerçek setpoint'ler
-                if target_bearing is not None:
-                    self.telemetry_values["Heading Setpoint:"].setText(f"{target_bearing:.0f}°")
-                elif nav_bearing is not None:
-                    self.telemetry_values["Heading Setpoint:"].setText(f"{nav_bearing:.0f}°")
+                # Heading Setpoint: Aktif waypoint varsa bearing hesapla
+                if len(self.waypoints) > 0 and heading is not None:
+                    target_heading = self.get_target_heading_from_mission(heading)
+                    self.telemetry_values["Heading Setpoint:"].setText(f"{target_heading:.0f}°")
                 else:
-                    self.telemetry_values["Heading Setpoint:"].setText("Hesaplanıyor...")
-                
-                if groundspeed_setpoint is not None:
-                    self.telemetry_values["Hız Setpoint:"].setText(f"{groundspeed_setpoint:.1f} m/s")
+                    self.telemetry_values["Heading Setpoint:"].setText("Veri yok")
+
+                # Hız Setpoint: WPNAV_SPEED veya WP_SPEED parametresinden al (cm/s → m/s)
+                wpnav_speed = self.vehicle.parameters.get('WPNAV_SPEED', None)
+                wp_speed = self.vehicle.parameters.get('WP_SPEED', None)
+                speed_param = wpnav_speed if wpnav_speed is not None else wp_speed
+                if speed_param is not None:
+                    speed_ms = speed_param / 100.0  # cm/s → m/s
+                    self.telemetry_values["Hız Setpoint:"].setText(f"{speed_ms:.2f} m/s")
                 else:
-                    # Alternatif: vehicle.parameters'dan WPNAV_SPEED al
-                    wpnav_speed = getattr(self.vehicle.parameters, 'WPNAV_SPEED', None)
-                    if wpnav_speed:
-                        speed_ms = wpnav_speed / 100.0  # cm/s → m/s
-                        self.telemetry_values["Hız Setpoint:"].setText(f"{speed_ms:.1f} m/s")
-                    else:
-                        self.telemetry_values["Hız Setpoint:"].setText("Veri yok")
-                
+                    self.telemetry_values["Hız Setpoint:"].setText("Veri yok")
             else:  # MANUAL, STABILIZE, etc.
                 # Manuel modda: setpoint YOK
                 self.telemetry_values["Hız Setpoint:"].setText("MANUAL")
@@ -686,57 +693,60 @@ class GCSApp(QWidget):
         """Thruster güçleri - gerçek bağlantıda Pixhawk'tan PWM değerleri alınır"""
         if not hasattr(self, 'thruster_labels'):
             return
-        
         if self.is_connected and self.vehicle:
-            # GERÇEK VERİ: Pixhawk'tan servo çıkışları (PWM 1000-2000)
-            # self.vehicle.channels['1'] = Sol thruster PWM
-            # SERVO_OUTPUT_RAW cache'den PWM değerlerini al
             try:
-                # Cache'den PWM değerlerini al
-                # SERVO1_FUNCTION=74 (Motor2/Sağ), SERVO2_FUNCTION=73 (Motor1/Sol)
-                right_pwm = self.servo_output_cache.get('1')  # Kanal 1: Sağ thruster (SERVO_FUNCTION=74)
-                left_pwm = self.servo_output_cache.get('2')   # Kanal 2: Sol thruster (SERVO_FUNCTION=73)
-                
+                right_pwm = self.servo_output_cache.get('1')
+                left_pwm = self.servo_output_cache.get('2')
                 # None kontrolü yap
                 if left_pwm is not None and right_pwm is not None:
                     # Debug: Tüm PWM kanallarını kontrol et
                     all_channels_debug = []
-                    for ch in range(1, 9):  # Kanal 1-8 arası kontrol et
+                    for ch in range(1, 9):
                         pwm_val = self.servo_output_cache.get(str(ch))
                         if pwm_val is not None:
                             all_channels_debug.append(f"CH{ch}:{pwm_val}")
-                    
                     debug_msg = f"Cache PWM: {', '.join(all_channels_debug)} | SERVO1_FUNC=74(Sağ), SERVO2_FUNC=73(Sol)"
                     self.log_message_received.emit(debug_msg)
-                    
                     # Marine thruster PWM: 1500=neutral, 1000=tam geri, 2000=tam ileri
                     def calculate_thruster_power(pwm):
                         if pwm is None:
                             return 0, "NEUTRAL"
-                        # Neutral noktası 1500μs, ±25μs tolerans
                         diff = pwm - 1500
-                        power = abs(diff) / 5.0  # Her 5μs = %1 güç
+                        power = abs(diff) / 5.0
                         power = max(0, min(100, power))
-                        
-                        # Geniş neutral bölgesi: 1475-1525μs arası NEUTRAL
                         if abs(diff) <= 25:
                             direction = "NEUTRAL"
-                            power = 0  # Neutral'da güç 0 göster
+                            power = 0
                         elif diff > 25:
                             direction = "GERİ"
                         else:
                             direction = "İLERİ"
                         return power, direction
-                    
                     left_power, left_dir = calculate_thruster_power(left_pwm)
                     right_power, right_dir = calculate_thruster_power(right_pwm)
-                    
                     # Sol motor ilk (UI sırası), Sağ motor ikinci
                     motor_data = [(left_power, left_dir, left_pwm, "Sol", "CH2(73)"),
                                   (right_power, right_dir, right_pwm, "Sağ", "CH1(74)")]
-                    
+                    # --- PWM GRAFİK BUFFER ---
+                    now = time.time()
+                    if not hasattr(self, 'pwm_time_start'):
+                        self.pwm_time_start = now
+                    t = now - self.pwm_time_start
+                    # Grafik buffer'ına label'a yazılacak PWM değerlerini ekle
+                    self.pwm_time_buffer.append(t)
+                    self.pwm_left_buffer.append(left_pwm)
+                    self.pwm_right_buffer.append(right_pwm)
+                    if len(self.pwm_time_buffer) > self.pwm_max_points:
+                        self.pwm_time_buffer = self.pwm_time_buffer[-self.pwm_max_points:]
+                        self.pwm_left_buffer = self.pwm_left_buffer[-self.pwm_max_points:]
+                        self.pwm_right_buffer = self.pwm_right_buffer[-self.pwm_max_points:]
+                    self.left_curve.setData(self.pwm_time_buffer, self.pwm_left_buffer)
+                    self.right_curve.setData(self.pwm_time_buffer, self.pwm_right_buffer)
+                    # --- OTOMATİK KAYAN X-EKSENİ ---
+                    window_sec = 60  # Son 60 saniyeyi göster
+                    self.pwm_plot.setXRange(max(0, t - window_sec), t)
+                    # --- LABEL'LARA YAZ ---
                     for i, (power, direction, pwm_val, side, channel_info) in enumerate(motor_data):
-                        # Renk: güç ve yöne göre
                         if direction == "NEUTRAL":
                             color = "gray"
                         elif power < 30:
@@ -745,14 +755,11 @@ class GCSApp(QWidget):
                             color = "orange"
                         else:
                             color = "red"
-                            
                         real_pwm = pwm_val if pwm_val else 0
-                        # Kısa format: "Sol: 80% GERİ (1100μs)"
                         self.thruster_labels[i].setText(f"{side}: {power:.0f}% {direction} ({real_pwm}μs)")
                         self.thruster_labels[i].setStyleSheet(f"border: 1px solid {color}; padding: 5px; font-size: 10px; font-weight: bold; color: {color};")
                     return
                 else:
-                    # PWM değerleri henüz cache'de yok - basit fallback göster
                     for i in range(2):
                         side = "Sol" if i == 0 else "Sağ"
                         self.thruster_labels[i].setText(f"{side}: VERİ BEKLENİYOR")
@@ -760,7 +767,6 @@ class GCSApp(QWidget):
                     return
             except Exception as e:
                 self.log_message_received.emit(f"Thruster cache okunamadı: {e}")
-                # Hata durumunda da fallback göster
                 for i in range(2):
                     side = "Sol" if i == 0 else "Sağ"
                     self.thruster_labels[i].setText(f"{side}: HATA")
